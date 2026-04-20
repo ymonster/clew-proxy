@@ -1,4 +1,4 @@
-// Clew v2 — Process-level Traffic Hijacker
+// Clew — Process-level Traffic Hijacker
 // main.cpp: v3 architecture — Asio + ETW + Flat Tree + WinDivert dual-layer
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -13,6 +13,7 @@
 #include <string>
 #include <thread>
 #include "core/log.hpp"
+#include "core/version.hpp"
 
 #define ASIO_STANDALONE
 #include <asio.hpp>
@@ -64,7 +65,7 @@ struct cli_options {
 };
 
 static void print_usage() {
-    std::cout << "Clew v2 - Process-level Traffic Hijacker\n\n";
+    std::cout << "Clew " CLEW_VERSION " - Process-level Traffic Hijacker\n\n";
     std::cout << "Usage: clew [options]\n\n";
     std::cout << "Options:\n";
     std::cout << "  --gui           Launch with WebView2 GUI\n";
@@ -83,7 +84,7 @@ static cli_options parse_args(int argc, char* argv[]) {
     return opts;
 }
 
-static constexpr const wchar_t* CLEW_MUTEX_NAME = L"Global\\Clew_v2_SingleInstance";
+static constexpr const wchar_t* CLEW_MUTEX_NAME = L"Global\\Clew_SingleInstance";
 static constexpr const wchar_t* CLEW_WINDOW_CLASS = L"ClewWebViewClass";
 
 #ifdef CLEW_HAS_WEBVIEW2
@@ -150,7 +151,7 @@ int main(int argc, char* argv[]) {
             "%Y-%m-%d %H:%M:%S.%Qus"});
 #endif
 
-    PC_LOG_INFO("=== Clew v2.0.0 (v3 architecture) ===");
+    PC_LOG_INFO("=== Clew {} (v3 architecture) ===", CLEW_VERSION);
 
     if (!is_elevated()) {
         PC_LOG_ERROR("Clew requires administrator privileges");
@@ -341,7 +342,7 @@ int main(int argc, char* argv[]) {
             const auto& ui_cfg = config.get_v2().ui;
             std::wstring url = L"http://127.0.0.1:" + std::to_wstring(API_PORT) + L"/";
             gui = std::make_unique<clew::webview_app>(url, ui_cfg.window_width, ui_cfg.window_height);
-            gui->set_title(L"Clew v2");
+            gui->set_title(L"Clew");
             gui->set_initial_rect(ui_cfg.window_x, ui_cfg.window_y, ui_cfg.window_width, ui_cfg.window_height);
             gui->set_close_to_tray(ui_cfg.close_to_tray);
 #ifdef NDEBUG
@@ -439,7 +440,7 @@ int main(int argc, char* argv[]) {
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
 
-    PC_LOG_INFO("Clew v2 is ready.");
+    PC_LOG_INFO("Clew is ready.");
 
     // ============================================================
     // Main loop (GUI message pump or console wait)

@@ -19,6 +19,7 @@ import { getStats, getProxyStatus, startProxy, stopProxy, getProcessDetail, hija
 import { useSSE } from '@/api/sse'
 import { useTheme } from '@/composables/useTheme'
 import { useStatusBus } from '@/composables/useStatusBus'
+import { CLEW_VERSION } from '@/version'
 import type { Stats, ProxyStatus, ProcessInfo, AutoRule } from '@/api/types'
 import {
   Sun,
@@ -301,7 +302,7 @@ onUnmounted(() => {
               <path d="M 185 79 L 228 56" />
               <circle cx="232" cy="54" r="12" fill="currentColor" stroke="none" />
             </svg>
-            <span class="text-sm">Clew <span class="text-slate-400 dark:text-slate-500 font-normal text-xs ml-0.5">v0.7.0</span></span>
+            <span class="text-sm">Clew <span class="text-slate-400 dark:text-slate-500 font-normal text-xs ml-0.5">v{{ CLEW_VERSION }}</span></span>
           </div>
 
           <div class="flex items-center gap-3 text-xs font-medium text-slate-600 dark:text-slate-400">
