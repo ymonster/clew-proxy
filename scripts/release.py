@@ -131,7 +131,7 @@ def main() -> None:
         print("  ERROR: working tree is not clean:")
         print("  " + "\n  ".join(status.splitlines()))
         sys.exit(2)
-    print("  working tree clean ✓")
+    print("  working tree clean [OK]")
 
     prev_tag = sh(["git", "describe", "--tags", "--abbrev=0"])
     print(f"  previous tag: {prev_tag}")
@@ -202,7 +202,7 @@ def main() -> None:
     if dry:
         print("\n(dry run — nothing was actually changed)")
     else:
-        print(f"\n✓ Released {new_tag}: https://github.com/{GH_REPO}/releases/tag/{new_tag}")
+        print(f"\n[OK] Released {new_tag}: https://github.com/{GH_REPO}/releases/tag/{new_tag}")
 
 
 if __name__ == "__main__":
