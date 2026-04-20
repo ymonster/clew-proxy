@@ -51,8 +51,15 @@ RELEASE_DIRS = [
 GH_REPO = "ymonster/clew-proxy"
 
 
+def _resolve(cmd: list[str]) -> list[str]:
+    # Resolve the first argv entry to its full path so Windows picks up
+    # ".cmd" / ".bat" shims (npm, gh) that CreateProcess can't find on its own.
+    found = shutil.which(cmd[0])
+    return [found, *cmd[1:]] if found else cmd
+
+
 def sh(cmd: list[str], *, cwd: Path = ROOT, check: bool = True) -> str:
-    r = subprocess.run(cmd, cwd=cwd, text=True, capture_output=True)
+    r = subprocess.run(_resolve(cmd), cwd=cwd, text=True, capture_output=True)
     if check and r.returncode != 0:
         sys.stderr.write(f"\n[FAIL] {' '.join(cmd)}\n{r.stderr}\n")
         sys.exit(r.returncode)
@@ -64,7 +71,7 @@ def run_step(label: str, cmd: list[str], *, cwd: Path = ROOT, dry: bool = False)
     print(f"  {label}: ({pretty_cwd}) {' '.join(cmd)}")
     if dry:
         return
-    r = subprocess.run(cmd, cwd=cwd)
+    r = subprocess.run(_resolve(cmd), cwd=cwd)
     if r.returncode != 0:
         sys.exit(r.returncode)
 
