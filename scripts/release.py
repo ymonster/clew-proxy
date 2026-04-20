@@ -200,7 +200,7 @@ def main() -> None:
     run_step("gh release", cmd, dry=dry)
 
     if dry:
-        print("\n(dry run — nothing was actually changed)")
+        print("\n(dry run -- nothing was actually changed)")
     else:
         print(f"\n[OK] Released {new_tag}: https://github.com/{GH_REPO}/releases/tag/{new_tag}")
 
