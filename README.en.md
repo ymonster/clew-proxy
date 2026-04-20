@@ -57,6 +57,24 @@ Some apps (Spotify, certain geo-sensitive services) have trouble with DNS resolu
 - **Forwarder mode**: auto-reconfigures system DNS to `127.0.0.2` (Clew's built-in forwarder). All DNS queries go through SOCKS5 → upstream.
 - On disable / exit, the system DNS is auto-restored. Even if the process is force-killed, the next launch detects and restores the original configuration.
 
+### 5. API token auth (optional)
+
+The HTTP API listens on `127.0.0.1:18080` with auth **disabled** by default. If you're worried about other local processes hitting destructive endpoints like `/api/hijack`, you can enable it:
+
+Edit `clew.json`:
+
+```json
+"auth": {
+  "enabled": true,
+  "token": "a-sufficiently-random-string"
+}
+```
+
+After restarting Clew:
+
+- **WebView2 UI**: a one-time prompt asks for the token on first load; `localStorage` remembers it afterwards
+- **curl / scripts**: attach `Authorization: Bearer a-sufficiently-random-string`; SSE doesn't support custom headers, use the query-string fallback `?token=...`
+
 ### Why WinDivert
 
 - WinDivert is a mature WFP callout driver with stable Win10/11 support, open source, and actively maintained

@@ -57,6 +57,24 @@ Settings → Proxies，默认已经有一个 `default` 组，修改 host / port 
 - **Forwarder 模式**：自动把系统 DNS 配置成 127.0.0.2（Clew 内置 forwarder），所有 DNS 查询走 SOCKS5 → 上游。
 - 关闭 / 退出时自动还原系统 DNS；即使进程被强杀，下次启动也会自动检测并恢复。
 
+### 5. API Token 认证（可选）
+
+HTTP API 监听在 `127.0.0.1:18080`，默认**关闭**鉴权。如果担心同机其他进程调 `/api/hijack` 等破坏性接口，可以打开：
+
+编辑 `clew.json`：
+
+```json
+"auth": {
+  "enabled": true,
+  "token": "一串足够随机的字符"
+}
+```
+
+重启 Clew 后：
+
+- **WebView2 前端**：首次打开会弹一个对话框让你填一次 token，浏览器 localStorage 记住，之后透明使用
+- **curl / 脚本访问**：请求头带 `Authorization: Bearer 一串足够随机的字符`；SSE 不支持自定义 header，用查询参数 `?token=...`
+
 ### 为什么选 WinDivert
 
 - WinDivert 是一个成熟的 WFP callout driver，稳定支持 Win10/11，开源且社区活跃
