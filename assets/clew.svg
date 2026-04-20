@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- Clew icon: stylized C with a thread-and-needle tail -->
+  <rect width="256" height="256" fill="#f4ecdd"/>
+  <g fill="none" stroke="#1a1a1a" stroke-width="16" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Main C shape, opening facing upper-right -->
+    <path d="M 170 80 A 62 62 0 1 0 172 178"/>
+    <!-- Inner decorative curl near the right opening -->
+    <path d="M 172 178 q -14 -6 -8 -22"/>
+    <!-- Thread going out from top of C up-right -->
+    <path d="M 170 80 L 210 58"/>
+  </g>
+  <!-- Needle head -->
+  <circle cx="214" cy="56" r="9" fill="#1a1a1a"/>
+</svg>

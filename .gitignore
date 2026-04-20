@@ -1,0 +1,52 @@
+# Visual Studio / MSBuild
+.vs/
+*.user
+*.suo
+*.sdf
+*.opensdf
+*.VC.db
+*.VC.VC.opendb
+ipch/
+
+# Build outputs
+build/
+x64/
+x86/
+Debug/
+Release/
+*.obj
+*.pdb
+*.ilk
+*.idb
+*.exe
+*.dll
+*.sys
+*.lib
+*.exp
+*.log
+
+# Misc
+*.bak
+*.tmp
+*.cache
+Thumbs.db
+.DS_Store
+
+# Node / frontend
+node_modules/
+frontend/dist/
+
+# Python
+__pycache__/
+*.pyc
+
+# Claude Code session data (should never happen in public repo, but just in case)
+.claude/
+.worktrees/
+tasks/
+
+# User runtime config (contains personal proxy addresses, tokens)
+clew.json
+
+# Keep the icon even though *.ico could match a build artifact pattern elsewhere
+!assets/clew.ico

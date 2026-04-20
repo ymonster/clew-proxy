@@ -1,0 +1,5 @@
+#include <windows.h>
+
+// Embed the Clew icon. Windows uses the lowest-numbered IDI_APPLICATION-style
+// icon as the file's default, so make this one have ID 1.
+IDI_ICON1 ICON "clew.ico"
