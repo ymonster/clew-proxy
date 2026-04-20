@@ -21,7 +21,6 @@ import { useTheme } from '@/composables/useTheme'
 import { useStatusBus } from '@/composables/useStatusBus'
 import type { Stats, ProxyStatus, ProcessInfo, AutoRule } from '@/api/types'
 import {
-  Shield,
   Sun,
   Moon,
   Activity,
@@ -296,7 +295,12 @@ onUnmounted(() => {
       <header class="titlebar h-10 bg-white dark:bg-[#18181b] border-b border-slate-200 dark:border-slate-800 flex items-center justify-between shrink-0 transition-colors select-none">
         <div class="flex items-center gap-6 pl-4" style="-webkit-app-region: no-drag">
           <div class="flex items-center gap-2 font-bold text-slate-800 dark:text-slate-100">
-            <Shield class="w-4 h-4 text-blue-600 dark:text-blue-500" />
+            <!-- Clew mark: stylized C with thread + needle -->
+            <svg viewBox="0 0 256 256" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="18" stroke-linecap="round" stroke-linejoin="round" aria-label="Clew">
+              <path d="M 185 79 A 69 69 0 1 0 186 181" />
+              <path d="M 185 79 L 228 56" />
+              <circle cx="232" cy="54" r="12" fill="currentColor" stroke="none" />
+            </svg>
             <span class="text-sm">Clew <span class="text-slate-400 dark:text-slate-500 font-normal text-xs ml-0.5">v0.7.0</span></span>
           </div>
 
