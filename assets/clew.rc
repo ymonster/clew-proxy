@@ -1,5 +1,6 @@
 #include <windows.h>
 
-// Embed the Clew icon. Windows uses the lowest-numbered IDI_APPLICATION-style
-// icon as the file's default, so make this one have ID 1.
-IDI_ICON1 ICON "clew.ico"
+// Embed the Clew icon as resource ID 1. Windows Explorer / taskbar use the
+// resource with the numerically smallest ID as the executable's default icon,
+// so ID 1 guarantees it wins.
+1 ICON "clew.ico"

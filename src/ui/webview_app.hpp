@@ -176,8 +176,12 @@ private:
         nid_.uID = 1;
         nid_.uFlags = NIF_ICON | NIF_TIP | NIF_MESSAGE;
         nid_.uCallbackMessage = WM_TRAYICON;
-        nid_.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
-        wcscpy_s(nid_.szTip, L"Clew v2");
+        // Load the embedded Clew icon (resource ID 1 from assets/clew.rc).
+        // Fall back to system default if, for some reason, resource load fails.
+        HINSTANCE hinst = GetModuleHandleW(nullptr);
+        HICON app_icon = LoadIconW(hinst, MAKEINTRESOURCEW(1));
+        nid_.hIcon = app_icon ? app_icon : LoadIcon(nullptr, IDI_APPLICATION);
+        wcscpy_s(nid_.szTip, L"Clew");
         Shell_NotifyIconW(NIM_ADD, &nid_);
         tray_created_ = true;
     }
@@ -364,8 +368,11 @@ public:
         wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
         wc.hbrBackground = static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
         wc.lpszClassName = L"ClewWebViewClass";
-        wc.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
-        wc.hIconSm = LoadIcon(nullptr, IDI_APPLICATION);
+        // Embedded icon (resource ID 1 from assets/clew.rc) — drives the title
+        // bar icon (hIconSm) and the Alt-Tab / taskbar big icon (hIcon).
+        HICON embedded = LoadIconW(hinstance, MAKEINTRESOURCEW(1));
+        wc.hIcon = embedded ? embedded : LoadIcon(nullptr, IDI_APPLICATION);
+        wc.hIconSm = wc.hIcon;
 
         if (!RegisterClassExW(&wc)) {
             DWORD error = GetLastError();

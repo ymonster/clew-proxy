@@ -297,7 +297,7 @@ onUnmounted(() => {
         <div class="flex items-center gap-6 pl-4" style="-webkit-app-region: no-drag">
           <div class="flex items-center gap-2 font-bold text-slate-800 dark:text-slate-100">
             <Shield class="w-4 h-4 text-blue-600 dark:text-blue-500" />
-            <span class="text-sm">Clew <span class="text-slate-400 dark:text-slate-500 font-normal text-xs ml-0.5">v2</span></span>
+            <span class="text-sm">Clew <span class="text-slate-400 dark:text-slate-500 font-normal text-xs ml-0.5">v0.7.0</span></span>
           </div>
 
           <div class="flex items-center gap-3 text-xs font-medium text-slate-600 dark:text-slate-400">
