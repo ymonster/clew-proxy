@@ -39,7 +39,7 @@ Settings → Proxies. A `default` group exists; change host / port to point at y
 
 Auto Rules tab → New:
 
-- **Process name**: glob wildcards supported, e.g., `curl*`, `python.exe`, `*.exe`
+- **Process name**: glob wildcards supported, e.g., `curl*`, `python.exe`
 - **Cmdline pattern**: keywords that must appear in the command line (space-separated, case-insensitive, order-independent)
 - **Hack tree**: on = also proxy all child processes
 - **Protocol**: TCP / UDP / Both

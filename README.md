@@ -39,7 +39,7 @@ Settings → Proxies，默认已经有一个 `default` 组，修改 host / port 
 
 在 **Auto Rules** 标签页点 "New"：
 
-- **Process name**：支持通配符，比如 `curl*`、`python.exe`、`*.exe`
+- **Process name**：支持通配符，比如 `curl*`、`python.exe`
 - **Cmdline pattern**：命令行包含什么关键词（多个空格分隔、大小写不敏感、顺序无关）
 - **Hack tree**：勾上 = 连同所有子进程一起代理
 - **Protocol**：TCP / UDP / Both
