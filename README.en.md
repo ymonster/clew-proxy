@@ -11,7 +11,8 @@
 Clew is a process-level transparent proxy for Windows. In spirit, it's like Proxifier or SocksCap. The original motivation was that antigravity without TUN mode had various issues, and with TUN mode on it broke other apps — I didn't like hijacking traffic globally, so I built this.
 
 - **Based on WinDivert**: building our own WFP driver needs code signing (annual fee), not worth it for a personal open-source project
-- **Process-tree proxying**: match by process name, command line, or image path; the entire child-process tree (including dynamically spawned children) is proxied together
+- **Process-tree proxying**: once a rule matches, the entire child-process tree (including dynamically spawned children) is proxied together
+- **Command-line matching**: when multiple processes share the same executable name (e.g. several `python.exe` running different scripts), match by cmdline keywords to target only the one you want
 - **Multiple SOCKS5 backends**: configure several proxy groups on one machine, route different rules to different groups
 - **UDP support**: per-app-port SOCKS5 UDP ASSOCIATE, strictly RFC 1928 compliant
 - **Built-in DNS forwarder**: auto-configures system DNS to a local forwarder that sends queries through SOCKS5 UDP to upstream resolvers (8.8.8.8, etc.), solving DNS pollution and geo-mismatch issues
