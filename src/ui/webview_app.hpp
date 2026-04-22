@@ -455,8 +455,15 @@ inline bool is_webview2_available() {
     LPWSTR version = nullptr;
     HRESULT hr = GetAvailableCoreWebView2BrowserVersionString(nullptr, &version);
     if (SUCCEEDED(hr) && version) {
-        PC_LOG_INFO("WebView2 runtime version: {}",
-            std::string(version, version + wcslen(version)));
+        // Proper UTF-16 -> UTF-8 conversion (avoids C4244 narrowing from the
+        // iterator-based std::string constructor).
+        int len = WideCharToMultiByte(CP_UTF8, 0, version, -1, nullptr, 0, nullptr, nullptr);
+        std::string v;
+        if (len > 1) {
+            v.resize(len - 1);
+            WideCharToMultiByte(CP_UTF8, 0, version, -1, v.data(), len, nullptr, nullptr);
+        }
+        PC_LOG_INFO("WebView2 runtime version: {}", v);
         CoTaskMemFree(version);
         return true;
     }

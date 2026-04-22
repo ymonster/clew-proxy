@@ -3,40 +3,15 @@ import { ref, computed } from 'vue'
 import type { ProcessInfo } from '@/api/types'
 import { revealFile } from '@/api/client'
 import { Badge } from '@/components/ui/badge'
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from '@/components/ui/tooltip'
-import { Plus, Copy, Check, ChevronDown, ChevronUp, FolderOpen, Monitor, Zap, ZapOff } from 'lucide-vue-next'
+import { Plus, Copy, Check, ChevronDown, ChevronUp, FolderOpen, Monitor } from 'lucide-vue-next'
 
 const props = defineProps<{
   process: ProcessInfo | null
-  hasHijackedDescendants?: boolean
-  hasChildren?: boolean
 }>()
 
-const emit = defineEmits<{
+defineEmits<{
   'create-rule': []
-  hack: [pid: number]
-  unhack: [pid: number]
-  'unhack-tree': [node: ProcessInfo]
 }>()
-
-const isManualHijacked = computed(() =>
-  node.value?.hijack_source?.startsWith('manual') ?? false
-)
-const isAutoHijacked = computed(() =>
-  node.value?.hijack_source?.startsWith('auto') ?? false
-)
-const showHack = computed(() =>
-  node.value && !node.value.hijacked && !isAutoHijacked.value
-)
-const showUnhack = computed(() => isManualHijacked.value)
-const showUnhackTree = computed(() =>
-  isManualHijacked.value && props.hasChildren && props.hasHijackedDescendants
-)
 
 // Copy helpers
 const copied = ref<'cwd' | 'full' | null>(null)
@@ -159,53 +134,6 @@ async function locateExe() {
         </div>
       </div>
       <div class="flex items-center gap-1 shrink-0">
-        <TooltipProvider :delay-duration="300">
-          <!-- Hack button — tree mode by default -->
-          <Tooltip v-if="showHack">
-            <TooltipTrigger as-child>
-              <button
-                class="w-7 h-7 rounded-md flex items-center justify-center text-slate-400 hover:text-amber-500 dark:hover:text-amber-400 hover:bg-slate-200 dark:hover:bg-slate-800 transition-colors"
-                @click="emit('hack', node!.pid)"
-              >
-                <Zap class="w-4 h-4" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" :side-offset="4">
-              <p class="text-xs">Hack</p>
-            </TooltipContent>
-          </Tooltip>
-
-          <!-- Unhack single -->
-          <Tooltip v-if="showUnhack">
-            <TooltipTrigger as-child>
-              <button
-                class="w-7 h-7 rounded-md flex items-center justify-center text-emerald-500 dark:text-emerald-400 hover:text-red-500 dark:hover:text-red-400 hover:bg-slate-200 dark:hover:bg-slate-800 transition-colors"
-                @click="emit('unhack', node!.pid)"
-              >
-                <ZapOff class="w-4 h-4" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" :side-offset="4">
-              <p class="text-xs">Unhack</p>
-            </TooltipContent>
-          </Tooltip>
-
-          <!-- Unhack tree -->
-          <Tooltip v-if="showUnhackTree">
-            <TooltipTrigger as-child>
-              <button
-                class="w-7 h-7 rounded-md flex items-center justify-center text-emerald-500 dark:text-emerald-400 hover:text-red-500 dark:hover:text-red-400 hover:bg-slate-200 dark:hover:bg-slate-800 transition-colors"
-                @click="emit('unhack-tree', node!)"
-              >
-                <ZapOff class="w-4 h-4" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" :side-offset="4">
-              <p class="text-xs">Unhack Tree</p>
-            </TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
-
         <button
           @click="$emit('create-rule')"
           class="w-7 h-7 flex items-center justify-center rounded-md text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-slate-200 dark:hover:bg-slate-800 transition-colors"

@@ -27,6 +27,7 @@ import { Badge } from '@/components/ui/badge'
 import { getConfig, updateConfig } from '@/api/client'
 import { Save } from 'lucide-vue-next'
 import { useTheme } from '@/composables/useTheme'
+import { CLEW_VERSION } from '@/version'
 
 const { isDark } = useTheme()
 
@@ -342,8 +343,14 @@ onUnmounted(() => {
         <h2 class="text-base font-semibold text-slate-800 dark:text-slate-100 mb-1">About</h2>
         <div class="rounded-lg border border-slate-200 dark:border-slate-800 overflow-hidden">
           <div class="px-4 py-3 bg-white dark:bg-[#18181b] space-y-1">
-            <p class="text-xs text-slate-500 dark:text-slate-400">Version <span class="font-mono text-slate-700 dark:text-slate-300">2.0.0</span></p>
-            <p class="text-xs text-slate-500 dark:text-slate-400">More settings coming soon.</p>
+            <p class="text-xs text-slate-500 dark:text-slate-400">
+              Clew <span class="font-mono text-slate-700 dark:text-slate-300">v{{ CLEW_VERSION }}</span>
+            </p>
+            <p class="text-xs text-slate-500 dark:text-slate-400">
+              Windows 进程级流量代理 ·
+              <a href="https://github.com/ymonster/clew-proxy" target="_blank"
+                 class="text-blue-600 dark:text-blue-400 hover:underline">github.com/ymonster/clew-proxy</a>
+            </p>
           </div>
         </div>
       </div>

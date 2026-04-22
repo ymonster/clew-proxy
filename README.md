@@ -4,131 +4,198 @@
 
 **Languages**: [简体中文](README.md) · [English](README.en.md)
 
+[![Release](https://img.shields.io/github/v/release/ymonster/clew-proxy)](https://github.com/ymonster/clew-proxy/releases)
+[![License](https://img.shields.io/github/license/ymonster/clew-proxy)](LICENSE)
+
+![Main UI](docs/images/main_ui.png)
+
 ---
 
 ## 简介
 
-Clew 是一个运行在 Windows 的进程级流量代理工具。和 Proxifier / SocksCap 类似。最初做这个是因为早先 antigravity 不开 tun mode 就会有各种问题，开了也会导致其他应用的问题。而我很讨厌直接就全局劫持流量，所以做了这个小玩意儿。
+一个跑在 Windows 上的进程级流量代理工具。
 
-- **基于 WinDivert**：自研 WFP 驱动需要代码签名（年费），对个人开源项目不划算
-- **进程树代理**：一次命中规则，整棵子进程树（含动态创建的子进程）自动一并代理
-- **命令行级别匹配**：同一个 `python.exe` 跑不同脚本时，用命令行关键词精确锁定目标（比如只代理跑 `crawler.py` 的那个进程，不影响其它 python 进程）
-- **多 SOCKS5 后端**：同一机器上可配置多组代理，不同规则路由到不同组
-- **UDP 支持**：per-app-port SOCKS5 UDP ASSOCIATE，严格遵循 RFC 1928
-- **内置 DNS forwarder**：自动把系统 DNS 指向内置 forwarder → SOCKS5 UDP → 上游（8.8.8.8 等），解决 DNS 污染 / 地域不一致问题
-- **WebView2 前端**：Vue 3 + shadcn-vue 实现的原生桌面 UI，无需浏览器
+做它的起因是很早前用 Antigravity 时发现：后端 Clash 不开 TUN mode 甚至无法刷新模型列表，开了又影响其它应用。我不想为了一个软件全局劫持流量，就做了个工具让特定进程独立走代理，一直到现在这个版本。
+
+## 特性
+
+- **进程树代理**：一条规则命中后，它的所有子进程（包括启动后才动态派生的）会自动跟着走代理。Chromium / Electron 类应用会派生很多子进程，只代理主进程通常不够，或者你需要做足够的研究才能知道究竟需要代理哪个进程。那么现在你可以在 `Rules` 页面去增加规则，选择特定 image path 的 exe 文件，也可以只输入一个名字（比如 Antigravity.exe），都可以完成任务。
+- **命令行级别匹配**：比如同一个 `python.exe` 跑不同脚本时， `Rules` 页面配置你的规则时，可以用命令行关键词进行匹配（比如只代理跑 `crawler.py` 的那个进程，不影响其它 python 进程）。
+- **多 SOCKS5 后端**：支持多组代理，不同规则路由到不同组。因为我用到的大多数代理服务工具都支持 socks5，而 http 代理这些工具自身就支持，不需要我来做。
+- **UDP 支持**：per-app-port SOCKS5 UDP ASSOCIATE，基于 RFC 1928。
+- **内置 DNS forwarder**：启用后把系统 DNS 自动指向 Clew 的内置 forwarder，DNS 查询走 SOCKS5 到上游；关闭或退出会还原系统 DNS，异常被强杀，下次启动也会检测残留并恢复。
+
+## 这个工具适不适合我
+
+**适合**
+
+- 你想让某个app走代理，但它可能不只有http访问，也有tcp/udp访问，同时你完全不知道或者不想知道到底是哪个子进程做了网络活动。
+- 已经有 Clash 这类代理服务客户端在跑，只想让几个特定应用走它，不想开全局 TUN。
+- 在意 MIT 许可证，要集成进内部工具链或商业产品而不沾 AGPL 传染风险。
+
+**不适合**
+
+- 需要 macOS / Linux → 看 [ProxyBridge](https://github.com/InterceptSuite/ProxyBridge)
+- 只要命令行不要 GUI → 看 [ProxiFyre](https://github.com/wiresock/proxifyre)
 
 ## 安装与运行
 
-### 要求
+### 系统要求
 
-- Windows 10 (版本 2004 或更新) / Windows 11
+- Windows 10 版本 2004 或更新 / Windows 11
 - 管理员权限（WinDivert 驱动和系统 DNS 配置都需要）
+- [VS2022 C++ 运行时](https://aka.ms/vs/17/release/vc_redist.x64.exe)
+- WebView2 Runtime（Windows 11 自带；Windows 10 从 [微软](https://developer.microsoft.com/microsoft-edge/webview2/) 下载）
 
 ### 下载
 
-从 [Releases](https://github.com/ymonster/clew-proxy/releases) 页下载，可能需要安装 VS2022 的 redist，微软官网就有。
+[Releases 页](https://github.com/ymonster/clew-proxy/releases) 下载最新 zip，解压，双击 `clew.exe`，会自动弹 UAC 提权。
 
-## 使用指南
+## 使用
 
 ### 1. 配置代理后端
 
-Settings → Proxies，默认已经有一个 `default` 组，修改 host / port 指向你的 SOCKS5 代理（比如 Clash / Shadowsocks 的 127.0.0.1:7890）。
+Proxies 标签页
+
+- 默认已经有一个 `default` 组，改 host / port 指向你的 SOCKS5（比如 Clash 的 `127.0.0.1:7890`）。
+- 点击刷新图标可以进行延迟测试
+
+![Proxy group](docs/images/proxy_group.png)
 
 ### 2. 添加 Auto Rule
 
-在 **Auto Rules** 标签页点 "New"：
+Rules 标签页
 
-- **Process name**：支持通配符，比如 `curl*`、`python.exe`
-- **Cmdline pattern**：命令行包含什么关键词（多个空格分隔、大小写不敏感、顺序无关）
-- **Hack tree**：勾上 = 连同所有子进程一起代理
-- **Protocol**：TCP / UDP / Both
-- **Proxy group**：走哪个代理组
+- 点击 `Add Rule` 可以新增规则，新建规则默认 OFF，要手动打开开关才会生效
+  - **Name**：规则名
+  - **Process name**：通配符，例如 `curl*`、`python.exe`
+  - **Cmdline pattern**：命令行关键词（多关键词空格分隔，大小写不敏感，顺序无关）
+  - **Hack tree**：勾上 = 子进程也跟着代理
+  - **Protocol**：TCP / UDP / Both
+  - **Proxy group**：走哪个代理组
+- 可以查看当前的规则列表和状态
 
-保存 → 启动对应进程即被代理。
+![Rules](docs/images/rules.png)
 
-### 3. 手动代理某个进程
+### 3. 进程树和 Network Activities
 
-**Process Tree** 里 hover 进程会在右侧出现小图标，点击即可代理。
+- **Process Tree**：进程树。hover 某个进程，右侧会出现一个小闪电图标，点击即可代理当前这个 PID（含它未来派生的子进程）。适合临时调试。
 
-### 4. DNS Proxy
+  ![Process tree hover](docs/images/process_hover.png)
 
-部分应用（Spotify、某些海外服务）对地域敏感的 DNS 解析会出问题。开启 Settings → DNS Proxy：
+- **All Processes**：点击左侧 `All Processes`（或不选中任何特定进程）可以看到所有进程的实时网络活动。
+- **Network Activities 进程头**：选中某个进程后，上方会出现这个进程的详细信息条。
+  - **定位**：进程名左侧 explorer 图标可以定位进程所在目录
+  - **复制信息**：路径栏 hover 会出现两个复制图标，左侧复制的是 working directory，右侧 `all` 复制连同 image path 在内的完整 cmdline
+  - **从进程增加规则**：右侧 `+` 图标可以以此进程为蓝本新增一条规则
 
-- **Forwarder 模式**：自动把系统 DNS 配置成 127.0.0.2（Clew 内置 forwarder），所有 DNS 查询走 SOCKS5 → 上游。
-- 关闭 / 退出时自动还原系统 DNS；即使进程被强杀，下次启动也会自动检测并恢复。
+  ![Network Activities process header](docs/images/network_process_hover_to_copy.png)
 
-### 5. API Token 认证（可选）
+### 4. DNS Proxy（默认关闭）
 
-HTTP API 监听在 `127.0.0.1:18080`，默认**关闭**鉴权。如果担心同机其他进程调 `/api/hijack` 等破坏性接口，可以打开：
+部分应用（Spotify、某些海外服务）对 DNS 解析的地域敏感。Settings → DNS Proxy 打开后：
+
+- 把系统 DNS 自动配置成 127.0.0.2（Clew 内置 forwarder）
+- DNS 查询走 SOCKS5 到上游（默认 8.8.8.8）
+- 关闭 / 退出自动还原系统 DNS；异常退出下次启动会检测残留并恢复
+
+### 5. API Token（可选）
+
+后端 HTTP API 监听 `127.0.0.1:18080`，默认不鉴权。如果担心同机其他进程误调用写类接口（如 hijack、改配置），可以开启鉴权：
 
 编辑 `clew.json`：
 
 ```json
 "auth": {
   "enabled": true,
-  "token": "一串足够随机的字符"
+  "token": "<你的随机字符串>"
 }
 ```
 
-重启 Clew 后：
+生成 token 的一种方式：
 
-- **WebView2 前端**：首次打开会弹一个对话框让你填一次 token，浏览器 localStorage 记住，之后透明使用
-- **curl / 脚本访问**：请求头带 `Authorization: Bearer 一串足够随机的字符`；SSE 不支持自定义 header，用查询参数 `?token=...`
+```bash
+python -c "import secrets; print(secrets.token_hex(24))"
+```
 
-### 为什么选 WinDivert
+启用后：
 
-- WinDivert 是一个成熟的 WFP callout driver，稳定支持 Win10/11，开源且社区活跃
-- **LGPL v3** 授权允许我们动态链接 `.dll` 而不污染主项目许可证
-- 双层架构（SOCKET SNIFF + NETWORK reflection）可以在 socket 建立阶段就记录 PID→group 映射，后续重定向零查表
-- **WinDivert 本体免费，我们自己开源，零成本**
+- WebView2 UI 首次打开会要求填一次 token，之后用 localStorage 记住
+- curl / 脚本带请求头 `Authorization: Bearer <token>`；SSE 不支持自定义头，用查询参数 `?token=<token>`
 
-### 为什么没做 Hook mode（DLL 注入）
+## 技术选择
 
-我试过 DLL 注入 `GetAddrInfoW` 的路线，但有两个问题：
+### 第三方库
 
-1. **Chromium / Electron 应用用自建 DNS resolver**：新版 Chromium 越来越多地绕开 `GetAddrInfoW`，直接走 async UDP DNS 客户端。只 hook `GetAddrInfoW` 覆盖不到（实测 Spotify 能覆盖，但改后端代理的 DNS 配置也能达到同样效果）。
-2. **全链路 hook 成本高**：要可靠代理一个应用，得同时 hook `getaddrinfo`/`GetAddrInfoW`/`connect`/`WSAConnect`/`ConnectEx`；还要应对沙箱策略（`ProcessSignaturePolicy`）、签名校验、反注入等各类拦截。（签名要收费！）
+后端：
 
-### v2：未来可能会做的
+- [WinDivert](https://github.com/basil00/Divert) — Windows 下基于 WFP 的用户态抓包 / 转发库；动态链接，随 release 一起分发（LGPL v3）
+- [quill](https://github.com/odygrd/quill) — 异步结构化日志
+- [nlohmann/json](https://github.com/nlohmann/json) — JSON 解析和序列化
+- [cpp-httplib](https://github.com/yhirose/cpp-httplib) — 内置 HTTP + SSE 服务端
+- [asio](https://think-async.com/Asio/) — 异步 IO
+- [WebView2](https://developer.microsoft.com/microsoft-edge/webview2/) — 嵌入 Edge 渲染前端 UI
 
-1. 如果真有很多人有这个需求，可能会考虑使用 WFP callout driver 技术，配合 `PsSetCreateProcessNotifyRoutineEx` 能比现在更完善，不会错过任何信息。但主要是这个路线的签名什么的费用太高了。
+前端：
 
-   我觉得对我目前的需求来说够用了，当然全链路 hook 也是一个选项。
+- [Vue 3](https://vuejs.org/) + TypeScript + [Vite](https://vitejs.dev/) — 应用框架和构建
+- [reka-ui](https://reka-ui.com/)（shadcn-vue 风格） + [Tailwind CSS](https://tailwindcss.com/) — 组件 + 样式
+- [AG Grid Community](https://www.ag-grid.com/) — Network Activities 表格
+- [Monaco Editor](https://microsoft.github.io/monaco-editor/) — Settings 里的 JSON 编辑器（懒加载）
+- [Lucide](https://lucide.dev/) — 图标
 
-2. 加入对应用层协议的基本标识（http/quic...）
-3. 加入支持 LUA 的插件能力，可以针对特定进程特定协议上下行做修改
+完整许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
-## 构建
+### 为什么用 WinDivert
 
-### 依赖
+- 成熟的 WFP callout driver，Win10/11 稳定支持
+- LGPL v3 允许动态链接 `.dll`，主项目可以保持 MIT
+- **免费**：WinDivert 作者已经付了 kernel driver 签名费用，发布的就是签好的 .sys
 
-- Visual Studio 2022
+### 为什么现在不用 DLL 注入路线
+
+1. 尝试过注入 `GetAddrInfoW` 效果不错，但现在有很多自带异步 DNS resolver 的进程无法覆盖。所以需要同时注入 `getaddrinfo` / `GetAddrInfoW` / `connect` / `WSAConnect` / `ConnectEx` 等网络相关调用，工程量稍大。
+2. 使用 `PsSetCreateProcessNotifyRoutineEx` 可以更准确地发现进程的创建和销毁，结合网络层能更准确地拦截网络操作，注入等动作会更准确和高效。
+3. 但以上技术在我本机测试中可行，实际环境中需要考虑安全软件，需要通过 SignPath 这类服务签名，以及适配各种安全软件等一系列操作，本身周期就很长，甚至可能需要付费。
+4. 结论：WinDivert 目前够用，但如果有相应需求可以单开 branch 尝试 DLL 注入。
+
+### 为什么不做自研 WFP kernel driver
+
+技术上更完善（`FWPM_LAYER_ALE_CONNECT_REDIRECT_V4` 直接改 socket 目标、零包操作），但有一个非常关键的问题： Windows 10+ 要求 kernel driver 必须由 Microsoft 签名，走 Partner Center 需要一张 EV code signing 证书（约 300–600 美元 / 年）和 attestation 流程，成本过高。构建
+
+### 构建工具链
+
+- Visual Studio 2022（C++23）
 - CMake 3.20+
-- vcpkg（`quill`, `nlohmann-json`, `cpp-httplib`, `asio`）
-- Node.js 20+（前端构建）
-- WebView2 Runtime（Windows 11 自带；Windows 10 从微软网站安装）
+- vcpkg
+- Node.js 20+
+- WebView2 SDK
 
 ### 步骤
 
 ```bash
-# 1. 配置
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64 --preset windows-vcpkg
+# 配置
+cmake --preset windows-vcpkg
 
-# 2. 构建后端
+# 后端
 cmake --build build --config Release
 
-# 3. 构建前端
+# 前端
 cd frontend
 npm install
 npm run build
 cd ..
 
-# 4. 运行
+# 运行
 ./build/Release/clew.exe
 ```
 
+## 贡献
+
+欢迎 Issue / PR。项目结构、架构说明、API schema 见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+
 ## License
 
-- Clew 本体：[MIT](LICENSE)
-- 依赖的 [WinDivert](https://github.com/basil00/Divert)：LGPL v3（动态链接，我们保留其原许可证于 `WinDivert-2.2.2-A/LICENSE`）
+- Clew：[MIT](LICENSE)
+- 动态链接的 [WinDivert](https://github.com/basil00/Divert)：LGPL v3（原许可证保留于 `WinDivert-2.2.2-A/LICENSE`）
+- 其它第三方依赖许可：见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)

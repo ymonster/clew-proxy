@@ -46,17 +46,14 @@ private:
     icon_cache* icon_cache_ = nullptr;
 
     // Atomic snapshot of the process tree JSON, published from strand.
-    // Read from httplib threads lock-free via atomic_load.
-    std::shared_ptr<const std::string> tree_snapshot_{
+    // Read from httplib threads lock-free.
+    std::atomic<std::shared_ptr<const std::string>> tree_snapshot_{
         std::make_shared<const std::string>("[]")
     };
 
     // SSE client management
     std::mutex sse_mutex_;
     std::vector<httplib::DataSink*> sse_clients_;
-
-    // Proxy running state (set via start/stop endpoints)
-    std::atomic<bool> proxy_running_{false};
 
     // Config change callback (for external wiring, e.g. WinDivert reload)
     std::function<void(const ConfigV2&)> on_config_change_;
@@ -155,7 +152,7 @@ private:
     // Publish a new tree snapshot atomically (called on strand after tree changes).
     void publish_tree_snapshot() {
         auto snap = std::make_shared<const std::string>(build_tree_snapshot());
-        std::atomic_store(&tree_snapshot_, snap);
+        tree_snapshot_.store(std::move(snap));
     }
 
     // Post work to the strand and wait for result synchronously (for httplib handlers).
@@ -278,7 +275,7 @@ private:
 
         // GET /api/processes — Full process tree (lock-free atomic snapshot read)
         server_.Get("/api/processes", [this](const httplib::Request&, httplib::Response& res) {
-            auto snap = std::atomic_load(&tree_snapshot_);
+            auto snap = tree_snapshot_.load();
             res.set_content(*snap, "application/json");
         });
 
@@ -1208,50 +1205,6 @@ private:
         });
 
         // =============================================================
-        // Proxy Control APIs
-        // =============================================================
-
-        // POST /api/proxy/start
-        server_.Post("/api/proxy/start", [this](const httplib::Request&, httplib::Response& res) {
-            if (proxy_running_) {
-                res.set_content(R"({"success":true,"message":"Proxy already running"})", "application/json");
-                return;
-            }
-            // TODO: Wire to actual WinDivert start when integrated
-            proxy_running_ = true;
-            broadcast_event("proxy_status", json{{"running", true}});
-            res.set_content(R"({"success":true})", "application/json");
-        });
-
-        // POST /api/proxy/stop
-        server_.Post("/api/proxy/stop", [this](const httplib::Request&, httplib::Response& res) {
-            if (!proxy_running_) {
-                res.set_content(R"({"success":true,"message":"Proxy already stopped"})", "application/json");
-                return;
-            }
-            // TODO: Wire to actual WinDivert stop when integrated
-            proxy_running_ = false;
-            broadcast_event("proxy_status", json{{"running", false}});
-            res.set_content(R"({"success":true})", "application/json");
-        });
-
-        // GET /api/proxy/status
-        server_.Get("/api/proxy/status", [this](const httplib::Request&, httplib::Response& res) {
-            json j;
-            j["running"] = proxy_running_.load();
-            j["enabled"] = true;  // Always enabled in v3; start/stop controls running state
-            // Count active connections from PortTracker
-            int active = 0;
-            if (port_tracker_) {
-                for (uint16_t p = 1; p < 65535; p++) {
-                    if (port_tracker_->is_active(p)) active++;
-                }
-            }
-            j["active_connections"] = active;
-            res.set_content(j.dump(), "application/json");
-        });
-
-        // =============================================================
         // Stats API
         // =============================================================
 
@@ -1262,7 +1215,6 @@ private:
                     const auto& tree = mgr_.tree();
                     j["hijacked_pids"] = mgr_.rules().get_hijacked_pids(tree).size();
                     j["auto_rules_count"] = mgr_.rules().auto_rules().size();
-                    j["proxy_running"] = proxy_running_.load();
                     return j;
                 });
                 res.set_content(result.dump(), "application/json");
@@ -1434,7 +1386,6 @@ public:
     void set_udp_port_tracker(UdpPortTracker* pt) { udp_port_tracker_ = pt; }
     void set_icon_cache(icon_cache* ic) { icon_cache_ = ic; }
     void set_on_config_change(std::function<void(const ConfigV2&)> cb) { on_config_change_ = std::move(cb); }
-    void set_proxy_running(bool running) { proxy_running_ = running; }
 
     // Broadcast an SSE event to all connected clients.
     // Thread-safe: uses sse_mutex_.

@@ -1,4 +1,4 @@
-import type { AutoRule, ProcessInfo, ProxyStatus, Stats, TcpConnection, NetworkConnection, ProxyGroup, GroupInUseError, ProxyTestResult } from './types'
+import type { AutoRule, ProcessInfo, Stats, TcpConnection, NetworkConnection, ProxyGroup, GroupInUseError, ProxyTestResult } from './types'
 
 const BASE = '/api'
 const TOKEN_STORAGE_KEY = 'clew_token'
@@ -182,18 +182,6 @@ export function updateConfig(config: Record<string, unknown>): Promise<void> {
 }
 
 // -- Proxy --
-
-export function getProxyStatus(): Promise<ProxyStatus> {
-  return request<ProxyStatus>('/proxy/status')
-}
-
-export function startProxy(): Promise<void> {
-  return requestVoid('/proxy/start', { method: 'POST' })
-}
-
-export function stopProxy(): Promise<void> {
-  return requestVoid('/proxy/stop', { method: 'POST' })
-}
 
 // -- Proxy Groups --
 

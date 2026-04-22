@@ -4,131 +4,200 @@
 
 **Languages**: [简体中文](README.md) · [English](README.en.md)
 
+[![Release](https://img.shields.io/github/v/release/ymonster/clew-proxy)](https://github.com/ymonster/clew-proxy/releases)
+[![License](https://img.shields.io/github/license/ymonster/clew-proxy)](LICENSE)
+
+![Main UI](docs/images/main_ui.png)
+
 ---
 
 ## Overview
 
-Clew is a process-level transparent proxy for Windows. In spirit, it's like Proxifier or SocksCap. The original motivation was that antigravity without TUN mode had various issues, and with TUN mode on it broke other apps — I didn't like hijacking traffic globally, so I built this.
+A process-level traffic proxy for Windows.
 
-- **Based on WinDivert**: building our own WFP driver needs code signing (annual fee), not worth it for a personal open-source project
-- **Process-tree proxying**: once a rule matches, the entire child-process tree (including dynamically spawned children) is proxied together
-- **Command-line matching**: when multiple processes share the same executable name (e.g. several `python.exe` running different scripts), match by cmdline keywords to target only the one you want
-- **Multiple SOCKS5 backends**: configure several proxy groups on one machine, route different rules to different groups
-- **UDP support**: per-app-port SOCKS5 UDP ASSOCIATE, strictly RFC 1928 compliant
-- **Built-in DNS forwarder**: auto-configures system DNS to a local forwarder that sends queries through SOCKS5 UDP to upstream resolvers (8.8.8.8, etc.), solving DNS pollution and geo-mismatch issues
-- **WebView2 native UI**: Vue 3 + shadcn-vue, no browser required
+The reason I built it: long ago while using Antigravity I hit a wall — with my Clash backend, TUN mode off meant I couldn't even refresh the model list, and turning TUN on broke other apps. I didn't want to hijack all traffic globally just for one app, so I built a tool that lets specific processes go through the proxy on their own. It has evolved into what it is today.
+
+## Features
+
+- **Process-tree proxying**: once a rule matches, all child processes (including ones dynamically spawned later) are proxied together. Chromium / Electron apps fork a lot of child processes — proxying just the main one usually isn't enough, or you'd have to dig around to figure out which child actually does the network work. Now you can go to the `Rules` page, pick a specific image path, or just type a name (e.g. `Antigravity.exe`) — either way works.
+- **Command-line matching**: for cases like the same `python.exe` running different scripts, you can match by command-line keywords on the `Rules` page (e.g. proxy only the process running `crawler.py`, leave other python processes alone).
+- **Multiple SOCKS5 backends**: configure several proxy groups and route different rules to different groups. Most proxy clients I use already speak SOCKS5, and HTTP proxying is usually handled by those clients themselves — so I didn't need to build HTTP support in.
+- **UDP support**: per-app-port SOCKS5 UDP ASSOCIATE, per RFC 1928.
+- **Built-in DNS forwarder**: when enabled, the system DNS is pointed at Clew's built-in forwarder; queries go through SOCKS5 to upstream. On disable or exit, the system DNS is restored. If the process is force-killed, the next launch detects the leftover state and restores it.
+
+## Is this tool for me
+
+**Good fit**
+
+- You want a specific app to go through a proxy, but it may not be HTTP-only — it could also do arbitrary TCP / UDP, and you don't know (or don't want to care) which child process actually does the network work.
+- You already have a proxy client (Clash-style) running, and only want a few specific apps to route through it — you don't want global TUN.
+- You care about MIT licensing, e.g. integrating into internal tooling or a commercial product without catching AGPL.
+
+**Not a fit**
+
+- You need macOS / Linux → try [ProxyBridge](https://github.com/InterceptSuite/ProxyBridge)
+- You want a CLI-only tool, no GUI → try [ProxiFyre](https://github.com/wiresock/proxifyre)
 
 ## Install & Run
 
 ### Requirements
 
-- Windows 10 (version 2004+) or Windows 11
-- Administrator privileges (required for both WinDivert driver and system DNS configuration)
+- Windows 10 version 2004 or newer / Windows 11
+- Administrator privileges (required by both WinDivert driver and system DNS configuration)
+- [VS2022 C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe)
+- WebView2 Runtime (bundled on Windows 11; download from [Microsoft](https://developer.microsoft.com/microsoft-edge/webview2/) on Windows 10)
 
 ### Download
 
-Grab the latest release from [Releases](https://github.com/ymonster/clew-proxy/releases). You may need to install the VS2022 redistributable (available from Microsoft's site).
+Grab the latest zip from the [Releases page](https://github.com/ymonster/clew-proxy/releases), extract, double-click `clew.exe` — it will auto-trigger UAC.
 
 ## Usage
 
-### 1. Configure proxy backend
+### 1. Configure a proxy backend
 
-Settings → Proxies. A `default` group exists; change host / port to point at your SOCKS5 proxy (e.g., Clash / Shadowsocks at `127.0.0.1:7890`).
+Proxies tab:
+
+- A `default` group already exists — change its host / port to point at your SOCKS5 (e.g. Clash at `127.0.0.1:7890`).
+- The refresh icon runs a latency test.
+
+![Proxy group](docs/images/proxy_group.png)
 
 ### 2. Add an Auto Rule
 
-Auto Rules tab → New:
+Rules tab:
 
-- **Process name**: glob wildcards supported, e.g., `curl*`, `python.exe`
-- **Cmdline pattern**: keywords that must appear in the command line (space-separated, case-insensitive, order-independent)
-- **Hack tree**: on = also proxy all child processes
-- **Protocol**: TCP / UDP / Both
-- **Proxy group**: which proxy group to route through
+- Click `Add Rule` to create a new rule. New rules default to OFF — flip the toggle to activate.
+  - **Name**: rule name
+  - **Process name**: glob wildcards, e.g. `curl*`, `python.exe`
+  - **Cmdline pattern**: command-line keywords (space-separated, case-insensitive, order-independent)
+  - **Hack tree**: check = child processes are proxied too
+  - **Protocol**: TCP / UDP / Both
+  - **Proxy group**: which proxy group to route through
+- You can review the rule list and its current state here.
 
-Save → launching the matching process triggers the proxy.
+![Rules](docs/images/rules.png)
 
-### 3. Manually proxy a process
+### 3. Process Tree and Network Activities
 
-In the **Process Tree**, hovering over a process reveals a small icon on the right; click it to proxy.
+- **Process Tree**: the left sidebar process tree. Hovering a process reveals a small lightning icon on the right; clicking it proxies the current PID (plus any future children). Useful for ad-hoc debugging.
 
-### 4. DNS Proxy
+  ![Process tree hover](docs/images/process_hover.png)
 
-Some apps (Spotify, certain geo-sensitive services) have trouble with DNS resolution. Enable Settings → DNS Proxy:
+- **All Processes**: click `All Processes` on the left (or deselect any specific process) to see the live network activity across all processes.
+- **Network Activities header**: once a process is selected, a detail bar appears at the top.
+  - **Locate**: the explorer icon to the left of the name reveals the executable's directory.
+  - **Copy info**: hovering over the path bar shows two copy icons — the left one copies the working directory, the right `all` icon copies the full command line including the image path.
+  - **Create a rule from this process**: the `+` icon on the right uses the current process as a template for a new rule.
 
-- **Forwarder mode**: auto-reconfigures system DNS to `127.0.0.2` (Clew's built-in forwarder). All DNS queries go through SOCKS5 → upstream.
-- On disable / exit, the system DNS is auto-restored. Even if the process is force-killed, the next launch detects and restores the original configuration.
+  ![Network Activities process header](docs/images/network_process_hover_to_copy.png)
 
-### 5. API token auth (optional)
+### 4. DNS Proxy (disabled by default)
 
-The HTTP API listens on `127.0.0.1:18080` with auth **disabled** by default. If you're worried about other local processes hitting destructive endpoints like `/api/hijack`, you can enable it:
+Some apps (Spotify, certain geo-sensitive services) are picky about DNS resolution. With Settings → DNS Proxy on:
+
+- The system DNS is auto-configured to `127.0.0.2` (Clew's built-in forwarder).
+- DNS queries go through SOCKS5 to the upstream resolver (default `8.8.8.8`).
+- On disable / exit the system DNS is auto-restored; if the process is force-killed, the next launch detects leftover state and restores it.
+
+### 5. API Token (optional)
+
+The backend HTTP API listens on `127.0.0.1:18080` without auth by default. If you're worried about other local processes accidentally calling state-mutating endpoints (e.g. hijack, config changes), turn auth on:
 
 Edit `clew.json`:
 
 ```json
 "auth": {
   "enabled": true,
-  "token": "a-sufficiently-random-string"
+  "token": "<your-random-string>"
 }
 ```
 
-After restarting Clew:
+One way to generate a token:
 
-- **WebView2 UI**: a one-time prompt asks for the token on first load; `localStorage` remembers it afterwards
-- **curl / scripts**: attach `Authorization: Bearer a-sufficiently-random-string`; SSE doesn't support custom headers, use the query-string fallback `?token=...`
+```bash
+python -c "import secrets; print(secrets.token_hex(24))"
+```
+
+Once enabled:
+
+- The WebView2 UI asks for the token on first load, then remembers it in `localStorage`.
+- curl / scripts attach `Authorization: Bearer <token>`; SSE can't carry custom headers, so use the query parameter `?token=<token>`.
+
+## Technical choices
+
+### Third-party libraries
+
+Backend:
+
+- [WinDivert](https://github.com/basil00/Divert) — Windows user-mode WFP packet capture / forwarding library; dynamically linked, shipped with the release (LGPL v3)
+- [quill](https://github.com/odygrd/quill) — async structured logging
+- [nlohmann/json](https://github.com/nlohmann/json) — JSON parsing and serialization
+- [cpp-httplib](https://github.com/yhirose/cpp-httplib) — HTTP + SSE server
+- [asio](https://think-async.com/Asio/) — asynchronous I/O
+- [WebView2](https://developer.microsoft.com/microsoft-edge/webview2/) — embedded Edge for the frontend UI
+
+Frontend:
+
+- [Vue 3](https://vuejs.org/) + TypeScript + [Vite](https://vitejs.dev/) — app framework and build
+- [reka-ui](https://reka-ui.com/) (shadcn-vue style) + [Tailwind CSS](https://tailwindcss.com/) — components and styling
+- [AG Grid Community](https://www.ag-grid.com/) — Network Activities table
+- [Monaco Editor](https://microsoft.github.io/monaco-editor/) — JSON editor inside Settings (lazy-loaded)
+- [Lucide](https://lucide.dev/) — icons
+
+Full license information: see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ### Why WinDivert
 
-- WinDivert is a mature WFP callout driver with stable Win10/11 support, open source, and actively maintained
-- **LGPL v3** licensing lets us dynamically link the `.dll` without forcing our main project license
-- Its dual-layer architecture (SOCKET SNIFF + NETWORK reflection) records the `PID → group` mapping at connect time, so the redirection path is zero-lookup
-- **WinDivert is free, our code is open source — zero cost**
+- Mature WFP callout driver with solid Win10/11 support
+- LGPL v3 permits dynamic linking of the `.dll`, so the main project stays MIT
+- **Free**: the WinDivert author already paid for kernel-driver signing — what gets released is already signed `.sys`
 
-### Why no Hook mode (DLL injection)
+### Why not DLL injection (for now)
 
-I tried a DLL injection + `GetAddrInfoW` hook path, but two issues came up:
+1. I tried injecting `GetAddrInfoW` — it worked fine, but many modern processes use their own async DNS resolvers and bypass it. So we'd need to inject `getaddrinfo` / `GetAddrInfoW` / `connect` / `WSAConnect` / `ConnectEx` and friends simultaneously — a bigger engineering commitment.
+2. Combining with `PsSetCreateProcessNotifyRoutineEx` would give us more accurate process creation / destruction events and cleaner interception at the network layer.
+3. These worked on my machine, but in the real world you also have to deal with AV / EDR, signing via SignPath-type services, and adapting to various security products — which takes a long time and may cost money.
+4. Conclusion: WinDivert is enough for now. If there's real demand, I'll open a branch and try DLL injection.
 
-1. **Chromium / Electron apps use their own DNS resolver**: modern Chromium increasingly bypasses `GetAddrInfoW` in favor of an async UDP DNS client. Hooking just `GetAddrInfoW` misses those (Spotify worked in testing, but changing the proxy backend's own DNS config achieves the same thing).
-2. **Full-stack hooking is expensive**: reliable proxying needs `getaddrinfo` / `GetAddrInfoW` / `connect` / `WSAConnect` / `ConnectEx` hooked simultaneously, plus dealing with sandbox policies (`ProcessSignaturePolicy`), signature enforcement, anti-injection, etc. (Signing isn't free either!)
+### Why not a self-built WFP kernel driver
 
-### v2: things I might do
-
-1. If enough people actually need it, I might do an in-house WFP callout driver paired with `PsSetCreateProcessNotifyRoutineEx` — more thorough than today, wouldn't miss any event. The blocker is the annual signing cost.
-
-   For my personal use, what we have is enough. Full-stack hooking remains an option too.
-
-2. Application-layer protocol identification (http/quic/...)
-3. LUA plugin support, so users can mutate upstream/downstream traffic for specific processes and protocols
+Technically cleaner (`FWPM_LAYER_ALE_CONNECT_REDIRECT_V4` rewrites the socket destination directly — zero packet manipulation), but the fatal issue: Windows 10+ requires kernel drivers to be signed by Microsoft, via Partner Center, which needs an EV code-signing certificate (~300–600 USD / year) and an attestation flow. SignPath-style OSS signing services only cover user-mode Authenticode — they don't do kernel drivers. The cost isn't worth it for a personal open-source project right now.
 
 ## Build
 
-### Prerequisites
+### Toolchain
 
-- Visual Studio 2022
+- Visual Studio 2022 (C++23)
 - CMake 3.20+
-- vcpkg (`quill`, `nlohmann-json`, `cpp-httplib`, `asio`)
-- Node.js 20+ (frontend build)
-- WebView2 Runtime (bundled on Win11; download from Microsoft on Win10)
+- vcpkg
+- Node.js 20+
+- WebView2 SDK
 
 ### Steps
 
 ```bash
-# 1. Configure
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64 --preset windows-vcpkg
+# Configure
+cmake --preset windows-vcpkg
 
-# 2. Build backend
+# Backend
 cmake --build build --config Release
 
-# 3. Build frontend
+# Frontend
 cd frontend
 npm install
 npm run build
 cd ..
 
-# 4. Run
+# Run
 ./build/Release/clew.exe
 ```
 
+## Contributing
+
+Issues / PRs welcome. Project structure, architecture, and API schema are documented in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 ## License
 
-- Clew itself: [MIT](LICENSE)
-- [WinDivert](https://github.com/basil00/Divert) dependency: LGPL v3 (dynamically linked; original license kept at `WinDivert-2.2.2-A/LICENSE`)
+- Clew: [MIT](LICENSE)
+- Dynamically linked [WinDivert](https://github.com/basil00/Divert): LGPL v3 (original license preserved at `WinDivert-2.2.2-A/LICENSE`)
+- Other third-party licenses: see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)

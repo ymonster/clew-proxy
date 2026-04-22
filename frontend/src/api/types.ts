@@ -83,18 +83,7 @@ export interface NetworkConnection extends TcpConnection {
   protocol: 'TCP' | 'UDP'
 }
 
-export interface ProxyStatus {
-  running: boolean
-  enabled: boolean
-  active_connections: number
-}
-
 export interface Stats {
-  active_connections: number
-  total_bytes_sent: number
-  total_bytes_received: number
   hijacked_pids: number
   auto_rules_count: number
-  proxy_running?: boolean
-  proxy_connections?: number
 }

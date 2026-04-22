@@ -433,8 +433,6 @@ int main(int argc, char* argv[]) {
 
             PC_LOG_INFO("UDP relay started (per-port sessions, no warmup needed)");
         }
-
-        api_server.set_proxy_running(true);
     }
 
     signal(SIGINT, signal_handler);

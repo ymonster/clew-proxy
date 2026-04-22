@@ -5,6 +5,7 @@
       "name": "windows-vcpkg",
       "displayName": "Windows x64 with Vcpkg",
       "generator": "Visual Studio 17 2022",
+      "architecture": "x64",
       "binaryDir": "${sourceDir}/build",
       "cacheVariables": {
         "CMAKE_TOOLCHAIN_FILE": "D:/public_library/raw_libs/vcpkg/scripts/buildsystems/vcpkg.cmake",

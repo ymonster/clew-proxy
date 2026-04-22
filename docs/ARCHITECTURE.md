@@ -188,17 +188,16 @@ POST   /api/proxy-groups/:id/migrate - Migrate rules from one group to another b
 POST   /api/proxy-groups/:id/test  - Measure latency to test_url
 GET    /api/config                 - Get full config JSON
 PUT    /api/config                 - Save full config JSON
-POST   /api/proxy/start            - Start proxy engine
-POST   /api/proxy/stop             - Stop proxy engine
-GET    /api/proxy/status           - Proxy running status
-GET    /api/stats                  - Connection statistics
+GET    /api/stats                  - Counts (hijacked_pids, auto_rules_count)
 GET    /api/env                    - Environment info
 POST   /api/shell/browse-exe       - Open file dialog for .exe
 POST   /api/shell/reveal           - Reveal file in Explorer
 GET    /api/events                 - SSE stream
 ```
 
-SSE events: `process_update`, `process_exit`, `proxy_status`, `auto_rule_changed`, `auto_rule_matched`.
+The engine is always-on while `clew.exe` runs — there is no start/stop control plane. WinDivert layers + acceptor + UDP relay + DNS manager are initialized at startup and torn down on shutdown.
+
+SSE events: `process_update`, `process_exit`, `auto_rule_changed`, `auto_rule_matched`.
 
 ## Config Schema (`clew.json`)
 

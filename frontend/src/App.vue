@@ -5,7 +5,7 @@ declare global {
   }
 }
 
-import { ref, computed, onMounted, onUnmounted, shallowRef, defineAsyncComponent } from 'vue'
+import { ref, onMounted, onUnmounted, shallowRef, defineAsyncComponent } from 'vue'
 import { Tabs, TabsContent } from '@/components/ui/tabs'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import ProcessTree from '@/components/ProcessTree.vue'
@@ -15,18 +15,16 @@ import AutoRules from '@/components/AutoRules.vue'
 import ProxiesTab from '@/components/ProxiesTab.vue'
 const ConfigEditor = defineAsyncComponent(() => import('@/components/ConfigEditor.vue'))
 import RuleEditorDialog from '@/components/RuleEditorDialog.vue'
-import { getStats, getProxyStatus, startProxy, stopProxy, getProcessDetail, hijackProcess, unhijackProcess, createAutoRule, updateAutoRule, deleteAutoRule } from '@/api/client'
+import { getStats, getProcessDetail, createAutoRule, updateAutoRule, deleteAutoRule } from '@/api/client'
 import { useSSE } from '@/api/sse'
 import { useTheme } from '@/composables/useTheme'
 import { useStatusBus } from '@/composables/useStatusBus'
 import { CLEW_VERSION } from '@/version'
-import type { Stats, ProxyStatus, ProcessInfo, AutoRule } from '@/api/types'
+import type { Stats, ProcessInfo, AutoRule } from '@/api/types'
 import {
   Sun,
   Moon,
   Activity,
-  ArrowDown,
-  ArrowUp,
   Wifi,
   Globe,
   Server,
@@ -55,21 +53,11 @@ const selectedPid = ref<number | undefined>(undefined)
 const selectedProcess = shallowRef<ProcessInfo | null>(null)
 
 const stats = ref<Stats>({
-  active_connections: 0,
-  total_bytes_sent: 0,
-  total_bytes_received: 0,
   hijacked_pids: 0,
   auto_rules_count: 0,
 })
 
-const proxyStatus = ref<ProxyStatus>({
-  running: false,
-  enabled: false,
-  active_connections: 0,
-})
-
 const activeTab = ref('network')
-const loading = ref(false)
 
 // === Rule Editor Dialog (global, shared by ProcessContextHeader + AutoRules) ===
 const autoRulesRef = ref<InstanceType<typeof AutoRules> | null>(null)
@@ -124,10 +112,6 @@ const processTreeRef = ref<InstanceType<typeof ProcessTree> | null>(null)
 
 const sse = useSSE()
 
-sse.on('proxy_status', (data) => {
-  proxyStatus.value = data
-})
-
 sse.on('process_update', () => {
   processTreeRef.value?.fetchProcesses()
   refreshSelectedProcess()
@@ -148,31 +132,9 @@ const tabs = [
 
 async function fetchStatus() {
   try {
-    // /api/stats has no SSE event — always poll.
     stats.value = await getStats()
-    // /api/proxy/status is pushed via SSE proxy_status event when SSE is up.
-    // Only hit the endpoint as a fallback when SSE is disconnected.
-    if (!sse.connected.value) {
-      proxyStatus.value = await getProxyStatus()
-    }
   } catch {
     // Backend not available yet
-  }
-}
-
-async function toggleProxy() {
-  loading.value = true
-  try {
-    if (proxyStatus.value.running) {
-      await stopProxy()
-    } else {
-      await startProxy()
-    }
-    await fetchStatus()
-  } catch (e) {
-    pushError(e, 'Proxy engine toggle failed')
-  } finally {
-    loading.value = false
   }
 }
 
@@ -190,53 +152,7 @@ async function onSelectProcess(pid: number | undefined) {
   }
 }
 
-// === Hack/Unhack from ProcessContextHeader ===
-
-function hasHijackedDescendant(node: ProcessInfo): boolean {
-  if (node.children) {
-    for (const child of node.children) {
-      if (child.hijacked || hasHijackedDescendant(child)) return true
-    }
-  }
-  return false
-}
-
-const headerHasHijackedDescendants = computed(() => {
-  const p = selectedProcess.value
-  if (!p) return false
-  return hasHijackedDescendant(p)
-})
-
-const headerHasChildren = computed(() => {
-  return !!selectedProcess.value?.children?.length
-})
-
-async function headerHack(pid: number) {
-  try {
-    await hijackProcess(pid)  // default tree=true
-    await refreshSelectedProcess()
-  } catch (e) {
-    pushError(e, 'Hijack failed')
-  }
-}
-
-async function headerUnhack(pid: number) {
-  try {
-    await unhijackProcess(pid)  // default tree=false (single)
-    await refreshSelectedProcess()
-  } catch (e) {
-    pushError(e, 'Unhijack failed')
-  }
-}
-
-async function headerUnhackTree(node: ProcessInfo) {
-  try {
-    await unhijackProcess(node.pid, true)  // tree=true (cascade)
-    await refreshSelectedProcess()
-  } catch (e) {
-    pushError(e, 'Unhijack tree failed')
-  }
-}
+// === ProcessContextHeader support ===
 
 async function refreshSelectedProcess() {
   const pid = selectedPid.value
@@ -270,12 +186,6 @@ function onCreateRuleFromProcess() {
   openRuleDialog(null, proc.name, workDir)
 }
 
-function formatRate(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B/s`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB/s`
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB/s`
-}
-
 let statusTimer: ReturnType<typeof setInterval> | null = null
 
 onMounted(() => {
@@ -303,33 +213,6 @@ onUnmounted(() => {
               <circle cx="232" cy="54" r="12" fill="currentColor" stroke="none" />
             </svg>
             <span class="text-sm">Clew <span class="text-slate-400 dark:text-slate-500 font-normal text-xs ml-0.5">v{{ CLEW_VERSION }}</span></span>
-          </div>
-
-          <div class="flex items-center gap-3 text-xs font-medium text-slate-600 dark:text-slate-400">
-            <div
-              class="flex items-center gap-1.5 px-2 py-0.5 rounded border transition-colors"
-              :class="proxyStatus.running
-                ? 'bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-100 dark:border-emerald-500/20'
-                : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-700'"
-            >
-              <div
-                class="w-1.5 h-1.5 rounded-full"
-                :class="proxyStatus.running ? 'bg-emerald-500 dark:bg-emerald-400 animate-pulse' : 'bg-slate-400'"
-              />
-              {{ proxyStatus.running ? 'Running' : 'Stopped' }}
-            </div>
-            <div class="flex items-center gap-1">
-              <Activity class="w-3 h-3 text-slate-400 dark:text-slate-500" />
-              {{ stats.active_connections }}
-            </div>
-            <div class="flex items-center gap-1 text-amber-600 dark:text-amber-500">
-              <ArrowDown class="w-3 h-3" />
-              {{ formatRate(stats.total_bytes_received) }}
-            </div>
-            <div class="flex items-center gap-1 text-blue-600 dark:text-blue-400">
-              <ArrowUp class="w-3 h-3" />
-              {{ formatRate(stats.total_bytes_sent) }}
-            </div>
           </div>
         </div>
 
@@ -408,12 +291,7 @@ onUnmounted(() => {
             <ProcessContextHeader
               v-if="activeTab === 'network'"
               :process="selectedProcess"
-              :has-hijacked-descendants="headerHasHijackedDescendants"
-              :has-children="headerHasChildren"
               @create-rule="onCreateRuleFromProcess"
-              @hack="headerHack"
-              @unhack="headerUnhack"
-              @unhack-tree="headerUnhackTree"
             />
 
             <TabsContent value="network" class="flex-1 m-0 min-h-0 data-[state=active]:flex data-[state=active]:flex-col overflow-hidden">
@@ -443,20 +321,6 @@ onUnmounted(() => {
       <!-- ==================== FOOTER (h-8) ==================== -->
       <footer class="h-8 bg-slate-50 dark:bg-[#18181b] border-t border-slate-200 dark:border-slate-800 flex items-center justify-between px-4 text-xs text-slate-500 dark:text-slate-400 font-medium shrink-0 transition-colors select-none">
         <div class="flex items-center gap-6">
-          <button
-            class="flex items-center gap-1.5 hover:text-slate-700 dark:hover:text-slate-200 transition-colors"
-            :disabled="loading"
-            @click="toggleProxy"
-          >
-            <span>Proxy Engine:</span>
-            <span
-              class="font-semibold flex items-center gap-1"
-              :class="proxyStatus.running ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-500'"
-            >
-              <div class="w-1.5 h-1.5 rounded-full" :class="proxyStatus.running ? 'bg-emerald-500 dark:bg-emerald-400' : 'bg-slate-400'" />
-              {{ proxyStatus.running ? 'Active' : 'Stopped' }}
-            </span>
-          </button>
           <div class="flex items-center gap-1.5">
             <span>Listen Port:</span>
             <span class="text-slate-700 dark:text-slate-300 font-mono tracking-tight">18080</span>
@@ -482,10 +346,6 @@ onUnmounted(() => {
           <div v-else class="flex items-center gap-1.5 text-red-400">
             <div class="w-1.5 h-1.5 rounded-full bg-red-500" />
             <span>SSE Disconnected</span>
-          </div>
-          <div class="flex items-center gap-1.5">
-            <div class="w-1.5 h-1.5 rounded-full bg-emerald-500 dark:bg-emerald-400" />
-            <span>Ready</span>
           </div>
         </div>
       </footer>
