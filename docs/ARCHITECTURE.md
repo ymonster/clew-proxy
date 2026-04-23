@@ -261,3 +261,9 @@ SSE events: `process_update`, `process_exit`, `auto_rule_changed`, `auto_rule_ma
 - Header-only architecture: single translation unit (`main.cpp` includes all `.hpp`).
 - Frontend builds to static files served by cpp-httplib at runtime; dev mode uses Vite's proxy to port 18080.
 - Kill `clew.exe` before rebuilding (MSVC LNK1104 error otherwise).
+
+## Related documents
+
+- [CODE_QUALITY.md](CODE_QUALITY.md) — SonarCloud rule-by-rule decisions,
+  accept-comment templates, and open modernization TODOs
+  (e.g. `string_view` migration, http_api_server per-resource split).
