@@ -108,7 +108,7 @@ inline std::string query_process_cmdline(DWORD pid) {
             status = NtQuery(h, 60, buf.get(), buf_size, &ret_len);
         }
         if (status >= 0) { // NT_SUCCESS
-            struct { USHORT Length; USHORT MaximumLength; PWSTR Buffer; } *us =
+            const struct { USHORT Length; USHORT MaximumLength; PWSTR Buffer; } *us =
                 reinterpret_cast<decltype(us)>(buf.get());
             if (us->Buffer && us->Length > 0) {
                 int wchar_count = us->Length / sizeof(WCHAR);
@@ -156,6 +156,12 @@ struct raw_process_record {
 
 class flat_tree {
 public:
+    flat_tree() = default;
+    flat_tree(const flat_tree&) = default;
+    flat_tree& operator=(const flat_tree&) = default;
+    flat_tree(flat_tree&&) noexcept = default;
+    flat_tree& operator=(flat_tree&&) noexcept = default;
+
     // ---- Accessors (strand-safe, only called from strand context) ----
 
     const std::vector<process_entry>& entries() const { return entries_; }
@@ -208,7 +214,7 @@ public:
         // Check for PID reuse
         auto it = side_map_.find(pid);
         if (it != side_map_.end()) {
-            auto& existing = entries_[it->second];
+            const auto& existing = entries_[it->second];
             if (filetime_equal(existing.create_time, create_time)) {
                 return it->second;  // Idempotent: same process, skip
             }
@@ -240,7 +246,7 @@ public:
         auto it = side_map_.find(pid);
         if (it == side_map_.end()) return false;
 
-        auto& entry = entries_[it->second];
+        const auto& entry = entries_[it->second];
         if (!filetime_equal(entry.create_time, create_time)) return false;
 
         tombstone_entry(it->second);

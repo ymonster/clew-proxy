@@ -8,6 +8,7 @@
 #include <ws2tcpip.h>
 #include <iphlpapi.h>
 #include <windows.h>
+#include <cstddef>
 #include <vector>
 #include <string>
 #include "core/log.hpp"
@@ -26,8 +27,6 @@ class udp_table {
 public:
     static std::vector<udp_endpoint> get_endpoints(DWORD filter_pid = 0) {
         std::vector<udp_endpoint> result;
-
-        PMIB_UDPTABLE_OWNER_PID table = nullptr;
         DWORD size = 0;
 
         DWORD ret = GetExtendedUdpTable(nullptr, &size, FALSE, AF_INET,
@@ -37,17 +36,14 @@ public:
             return result;
         }
 
-        table = (PMIB_UDPTABLE_OWNER_PID)malloc(size);
-        if (!table) {
-            PC_LOG_ERROR("Failed to allocate memory for UDP table");
-            return result;
-        }
+        // RAII backing storage for the variable-size MIB_UDPTABLE_OWNER_PID.
+        std::vector<std::byte> buf(size);
+        auto* table = reinterpret_cast<PMIB_UDPTABLE_OWNER_PID>(buf.data());
 
         ret = GetExtendedUdpTable(table, &size, FALSE, AF_INET,
                                    UDP_TABLE_OWNER_PID, 0);
         if (ret != NO_ERROR) {
             PC_LOG_ERROR("GetExtendedUdpTable failed: {}", ret);
-            free(table);
             return result;
         }
 
@@ -62,7 +58,6 @@ public:
             result.push_back(ep);
         }
 
-        free(table);
         return result;
     }
 };

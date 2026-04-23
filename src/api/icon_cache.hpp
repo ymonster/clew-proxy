@@ -34,7 +34,8 @@ public:
         }
 
         // Cache PNG encoder CLSID
-        UINT num = 0, size = 0;
+        UINT num = 0;
+        UINT size = 0;
         Gdiplus::GetImageEncodersSize(&num, &size);
         if (size > 0) {
             auto buf = std::make_unique<uint8_t[]>(size);
@@ -137,6 +138,18 @@ private:
     }
 
     // Find exe path by name using CreateToolhelp32Snapshot
+    // Get UTF-8 full image path from an opened process handle. Empty on failure.
+    static std::string exe_path_from_handle(HANDLE h) {
+        WCHAR path[MAX_PATH];
+        DWORD len = MAX_PATH;
+        if (!QueryFullProcessImageNameW(h, 0, path, &len)) return {};
+        int utf8_len = WideCharToMultiByte(CP_UTF8, 0, path, len, nullptr, 0, nullptr, nullptr);
+        if (utf8_len <= 0) return {};
+        std::string result(utf8_len, '\0');
+        WideCharToMultiByte(CP_UTF8, 0, path, len, result.data(), utf8_len, nullptr, nullptr);
+        return result;
+    }
+
     static std::string find_exe_path(const std::string& exe_name) {
         // Convert name to wide
         int wlen = MultiByteToWideChar(CP_UTF8, 0, exe_name.c_str(), -1, nullptr, 0);
@@ -157,15 +170,7 @@ private:
                 if (_wcsicmp(pe.szExeFile, wname.c_str()) == 0) {
                     HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pe.th32ProcessID);
                     if (h && h != INVALID_HANDLE_VALUE) {
-                        WCHAR path[MAX_PATH];
-                        DWORD len = MAX_PATH;
-                        if (QueryFullProcessImageNameW(h, 0, path, &len)) {
-                            int utf8_len = WideCharToMultiByte(CP_UTF8, 0, path, len, nullptr, 0, nullptr, nullptr);
-                            if (utf8_len > 0) {
-                                result.resize(utf8_len);
-                                WideCharToMultiByte(CP_UTF8, 0, path, len, result.data(), utf8_len, nullptr, nullptr);
-                            }
-                        }
+                        result = exe_path_from_handle(h);
                         CloseHandle(h);
                     }
                     if (!result.empty()) break;

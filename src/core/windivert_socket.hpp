@@ -89,7 +89,7 @@ public:
             async_recv();
         } else {
             // Fallback: blocking thread posts to strand
-            blocking_thread_ = std::thread([this]() { blocking_recv_loop(); });
+            blocking_thread_ = std::jthread([this]() { blocking_recv_loop(); });
         }
     }
 
@@ -115,7 +115,7 @@ private:
     HANDLE handle_{INVALID_HANDLE_VALUE};
     bool use_iocp_{true};
     std::atomic<bool> running_{false};
-    std::thread blocking_thread_;
+    std::jthread blocking_thread_;
 
     WINDIVERT_ADDRESS addr_{};
     UINT addr_len_{sizeof(WINDIVERT_ADDRESS)};

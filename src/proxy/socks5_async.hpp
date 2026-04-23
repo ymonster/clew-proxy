@@ -10,6 +10,7 @@
 
 #include <array>
 #include <cstdint>
+#include <format>
 #include <stdexcept>
 #include "core/log.hpp"
 
@@ -60,8 +61,8 @@ socks5_handshake(tcp::socket& sock, uint32_t dest_ip_host, uint16_t dest_port)
     }
     if (connect_reply[1] != 0x00) {
         PC_LOG_WARN("[SOCKS5] Connect failed: reply code 0x{:02X}", connect_reply[1]);
-        throw std::runtime_error("SOCKS5 connect: server returned error " +
-                                 std::to_string(connect_reply[1]));
+        throw std::runtime_error(std::format("SOCKS5 connect: server returned error {}",
+                                              connect_reply[1]));
     }
 
     // Success — tunnel established, sock is now a transparent pipe

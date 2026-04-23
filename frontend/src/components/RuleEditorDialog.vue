@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, computed } from 'vue'
+import { ref, watch, computed, useId } from 'vue'
 import {
   Dialog,
   DialogContent,
@@ -16,6 +16,7 @@ import {
 } from '@/components/ui/select'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import {
   Tooltip,
   TooltipContent,
@@ -50,6 +51,15 @@ const emit = defineEmits<{
 }>()
 
 const isEditing = computed(() => props.rule != null)
+
+// a11y: unique ids for label/field association
+const ruleNameId = useId()
+const processNameId = useId()
+const cmdlinePatternId = useId()
+const protocolId = useId()
+const proxyGroupId = useId()
+const excludeCidrsId = useId()
+const includePortsId = useId()
 
 // Form state
 const formName = ref('')
@@ -221,11 +231,11 @@ function onClose(value: boolean) {
             <div class="h-px flex-1 bg-slate-200 dark:bg-slate-800" />
           </div>
           <div class="flex flex-col gap-2">
-            <label class="text-sm font-medium text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
+            <Label :for="ruleNameId" class="text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
               Rule Name
               <Tooltip><TooltipTrigger as-child><HelpCircle class="w-3.5 h-3.5 text-slate-400 cursor-help" /></TooltipTrigger><TooltipContent side="right"><p class="text-xs max-w-[200px]">Display name for this rule. Used for identification only.</p></TooltipContent></Tooltip>
-            </label>
-            <Input v-model="formName" class="h-[42px] bg-slate-50 dark:bg-[#101922] border-slate-200 dark:border-slate-800 transition-all focus:ring-1 focus:ring-blue-500" />
+            </Label>
+            <Input :id="ruleNameId" v-model="formName" class="h-[42px] bg-slate-50 dark:bg-[#101922] border-slate-200 dark:border-slate-800 transition-all focus:ring-1 focus:ring-blue-500" />
           </div>
         </div>
 
@@ -240,16 +250,16 @@ function onClose(value: boolean) {
             <!-- Process Name & Browse -->
             <div class="flex flex-col gap-2">
               <div class="flex justify-between items-center">
-                <label class="text-sm font-medium text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
+                <Label :for="processNameId" class="text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
                   Process Name
                   <Tooltip><TooltipTrigger as-child><HelpCircle class="w-3.5 h-3.5 text-slate-400 cursor-help" /></TooltipTrigger><TooltipContent side="right"><p class="text-xs max-w-[220px]">Executable name to match. Supports wildcards: * (any sequence), ? (single char). Case-insensitive.</p></TooltipContent></Tooltip>
-                </label>
+                </Label>
                 <span class="text-xs text-slate-500 dark:text-slate-400">Supports wildcards (*)</span>
               </div>
               <div class="flex gap-2">
                 <div class="relative flex-1">
                   <svg class="absolute left-3 top-2.5 w-5 h-5 text-slate-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2" ry="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>
-                  <Input v-model="formProcessName" class="h-[42px] pl-10 font-mono bg-slate-50 dark:bg-[#101922] border-slate-200 dark:border-slate-800 transition-all focus:ring-1 focus:ring-blue-500" />
+                  <Input :id="processNameId" v-model="formProcessName" class="h-[42px] pl-10 font-mono bg-slate-50 dark:bg-[#101922] border-slate-200 dark:border-slate-800 transition-all focus:ring-1 focus:ring-blue-500" />
                 </div>
                 <Button variant="outline" @click="browseExe" class="h-[42px] flex items-center gap-1.5 bg-slate-50 dark:bg-[#1c242c] border-slate-200 dark:border-slate-800 hover:text-blue-600 dark:hover:border-blue-500">
                   <FolderOpen class="w-4 h-4" /> Browse
@@ -280,15 +290,16 @@ function onClose(value: boolean) {
             <!-- Command Line Pattern -->
             <div class="flex flex-col gap-2">
               <div class="flex justify-between items-center">
-                <label class="text-sm font-medium text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
+                <Label :for="cmdlinePatternId" class="text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
                   Command-line Pattern
                   <Tooltip><TooltipTrigger as-child><HelpCircle class="w-3.5 h-3.5 text-slate-400 cursor-help" /></TooltipTrigger><TooltipContent side="right"><p class="text-xs max-w-[250px]">Optional. Without wildcards: space-separated keywords, all must appear (order-independent). With * or ?: glob match against full cmdline.</p></TooltipContent></Tooltip>
-                </label>
+                </Label>
                 <span class="text-xs text-slate-500 dark:text-slate-400">Keywords or wildcards</span>
               </div>
               <div class="relative">
                 <Terminal class="absolute left-3 top-2.5 w-5 h-5 text-slate-400" />
                 <Input
+                  :id="cmdlinePatternId"
                   v-model="formCmdlinePattern"
                   @input="onCmdlineInput"
                   class="h-[42px] pl-10 font-mono bg-slate-50 dark:bg-[#101922] border-slate-200 dark:border-slate-800 transition-all focus:ring-1 focus:ring-blue-500"
@@ -317,9 +328,9 @@ function onClose(value: boolean) {
 
             <!-- Protocol -->
             <div class="flex flex-col gap-2">
-              <label class="text-sm font-medium text-slate-700 dark:text-slate-200">Protocol</label>
+              <Label :for="protocolId" class="text-slate-700 dark:text-slate-200">Protocol</Label>
               <Select v-model="formProtocol">
-                <SelectTrigger class="w-full h-9 bg-white dark:bg-[#101922] border-slate-200 dark:border-slate-800">
+                <SelectTrigger :id="protocolId" class="w-full h-9 bg-white dark:bg-[#101922] border-slate-200 dark:border-slate-800">
                   <SelectValue placeholder="Select protocol" />
                 </SelectTrigger>
                 <SelectContent>
@@ -340,17 +351,17 @@ function onClose(value: boolean) {
             <div class="h-px flex-1 bg-slate-200 dark:bg-slate-800" />
           </div>
           <div class="flex flex-col gap-2">
-            <label class="text-sm font-medium text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
+            <Label :for="proxyGroupId" class="text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
               Proxy Group
               <Tooltip><TooltipTrigger as-child><HelpCircle class="w-3.5 h-3.5 text-slate-400 cursor-help" /></TooltipTrigger><TooltipContent side="right"><p class="text-xs max-w-[220px]">SOCKS5 proxy group to route matched traffic through. Configure groups in the Proxies tab.</p></TooltipContent></Tooltip>
-            </label>
+            </Label>
 
             <!-- Group selector with styled badges -->
             <Select
               :model-value="isCustomProxy ? 'custom' : formProxyGroupId"
               @update:model-value="(v: unknown) => { const s = String(v ?? ''); if (s === 'custom') { isCustomProxy = true } else { isCustomProxy = false; formProxyGroupId = s } }"
             >
-              <SelectTrigger class="h-[42px] bg-slate-50 dark:bg-[#101922] border-slate-200 dark:border-slate-800 focus:ring-1 focus:ring-blue-500">
+              <SelectTrigger :id="proxyGroupId" class="h-[42px] bg-slate-50 dark:bg-[#101922] border-slate-200 dark:border-slate-800 focus:ring-1 focus:ring-blue-500">
                 <div class="flex items-center gap-2">
                   <template v-if="isCustomProxy">
                     <span class="font-mono text-xs font-bold px-1.5 py-0.5 rounded bg-blue-600 text-white tracking-tight">custom</span>
@@ -408,11 +419,12 @@ function onClose(value: boolean) {
             <div v-show="advancedOpen" class="mt-4 space-y-5 pl-3 border-l-2 border-slate-200 dark:border-slate-800">
               <!-- Exclude CIDRs -->
               <div class="flex flex-col gap-2">
-                <label class="text-sm font-medium text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
+                <Label :for="excludeCidrsId" class="text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
                   Exclude CIDRs
                   <Tooltip><TooltipTrigger as-child><HelpCircle class="w-3.5 h-3.5 text-slate-400 cursor-help" /></TooltipTrigger><TooltipContent side="right"><p class="text-xs max-w-[220px]">Traffic to these CIDR ranges will bypass the proxy (go direct). Default excludes are applied globally via config.</p></TooltipContent></Tooltip>
-                </label>
+                </Label>
                 <TagInput
+                  :id="excludeCidrsId"
                   :model-value="formExcludeCidrs"
                   @update:model-value="formExcludeCidrs = $event"
                   placeholder="e.g. 192.168.0.0/16 (Enter to add)"
@@ -422,11 +434,12 @@ function onClose(value: boolean) {
 
               <!-- Include Ports -->
               <div class="flex flex-col gap-2">
-                <label class="text-sm font-medium text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
+                <Label :for="includePortsId" class="text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
                   Include Ports
                   <Tooltip><TooltipTrigger as-child><HelpCircle class="w-3.5 h-3.5 text-slate-400 cursor-help" /></TooltipTrigger><TooltipContent side="right"><p class="text-xs max-w-[220px]">Only proxy traffic to these ports. Leave empty to proxy all ports.</p></TooltipContent></Tooltip>
-                </label>
+                </Label>
                 <TagInput
+                  :id="includePortsId"
                   :model-value="formIncludePorts"
                   @update:model-value="formIncludePorts = $event"
                   placeholder="e.g. 443 (Enter to add)"

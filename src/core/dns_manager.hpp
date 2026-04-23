@@ -29,7 +29,12 @@ public:
                         std::filesystem::path state_file = "dns_state.json")
         : ioc_(ioc), state_file_(std::move(state_file)) {}
 
-    ~DnsManager() { stop(); }
+    ~DnsManager() noexcept {
+        try { stop(); }
+        catch (const std::exception& e) {
+            PC_LOG_ERROR("[DNS-MGR] destructor caught: {}", e.what());
+        } catch (...) {}
+    }
 
     DnsManager(const DnsManager&) = delete;
     DnsManager& operator=(const DnsManager&) = delete;

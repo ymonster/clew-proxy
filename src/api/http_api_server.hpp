@@ -9,6 +9,7 @@
 #include <httplib.h>
 #include <nlohmann/json.hpp>
 #include "core/log.hpp"
+#include <format>
 #include <thread>
 #include <atomic>
 #include <functional>
@@ -30,10 +31,30 @@ namespace clew {
 
 using json = nlohmann::json;
 
+// Given a hijacked connection, resolve its proxy_status field value
+// ("PROXIED" / "IGNORED") based on the matched rule's traffic filter.
+// Falls back to "PROXIED" if the rule-id lookup fails (auto-matched but
+// rule was removed concurrently).
+inline std::string resolve_proxy_filter_status(const rule_engine_v3& rules,
+                                                const flat_tree& tree,
+                                                DWORD pid,
+                                                const std::string& remote_ip,
+                                                uint16_t remote_port) {
+    auto match = rules.get_match_info(tree, pid);
+    if (!match) return "PROXIED";
+    for (const auto& rule : rules.auto_rules()) {
+        if (rule.id == match->rule_id) {
+            return TrafficFilterEngine::should_proxy(remote_ip, remote_port, rule.dst_filter)
+                 ? "PROXIED" : "IGNORED";
+        }
+    }
+    return "PROXIED";
+}
+
 class http_api_server {
 private:
     httplib::Server server_;
-    std::thread server_thread_;
+    std::jthread server_thread_;
     std::atomic<bool> running_{false};
     int port_;
     std::string static_dir_;
@@ -515,7 +536,7 @@ private:
                         c["remote_ip"] = conn.remote_ip;
                         c["remote_port"] = conn.remote_port;
                         c["state"] = conn.state;
-                        c["dest"] = conn.remote_ip + ":" + std::to_string(conn.remote_port);
+                        c["dest"] = std::format("{}:{}", conn.remote_ip, conn.remote_port);
 
                         // Check hijack status from flat_tree entry
                         uint32_t idx = tree.find_by_pid(conn.pid);
@@ -532,22 +553,8 @@ private:
                         } else if (conn.state == "LISTEN" || (conn.remote_ip == "0.0.0.0" && conn.remote_port == 0)) {
                             c["proxy_status"] = "LISTEN";
                         } else {
-                            // Check traffic filter for the matching rule
-                            auto match = rules.get_match_info(tree, conn.pid);
-                            if (match) {
-                                // Find the rule's traffic filter
-                                bool should_proxy = true;
-                                for (const auto& rule : rules.auto_rules()) {
-                                    if (rule.id == match->rule_id) {
-                                        should_proxy = TrafficFilterEngine::should_proxy(
-                                            conn.remote_ip, conn.remote_port, rule.dst_filter);
-                                        break;
-                                    }
-                                }
-                                c["proxy_status"] = should_proxy ? "PROXIED" : "IGNORED";
-                            } else {
-                                c["proxy_status"] = "PROXIED";
-                            }
+                            c["proxy_status"] = resolve_proxy_filter_status(
+                                rules, tree, conn.pid, conn.remote_ip, conn.remote_port);
                         }
 
                         // Process name from tree
@@ -608,7 +615,7 @@ private:
                         }
                         c["remote_ip"] = remote_ip;
                         c["remote_port"] = remote_port;
-                        c["dest"] = remote_ip.empty() ? "" : remote_ip + ":" + std::to_string(remote_port);
+                        c["dest"] = remote_ip.empty() ? std::string{} : std::format("{}:{}", remote_ip, remote_port);
 
                         // Hijack/process info from flat_tree
                         uint32_t idx = tree.find_by_pid(ep.pid);
@@ -623,20 +630,8 @@ private:
                         if (!is_hijacked) {
                             c["proxy_status"] = "-";
                         } else {
-                            auto match = rules.get_match_info(tree, ep.pid);
-                            if (match) {
-                                bool should_proxy = true;
-                                for (const auto& rule : rules.auto_rules()) {
-                                    if (rule.id == match->rule_id) {
-                                        should_proxy = TrafficFilterEngine::should_proxy(
-                                            remote_ip, remote_port, rule.dst_filter);
-                                        break;
-                                    }
-                                }
-                                c["proxy_status"] = should_proxy ? "PROXIED" : "IGNORED";
-                            } else {
-                                c["proxy_status"] = "PROXIED";
-                            }
+                            c["proxy_status"] = resolve_proxy_filter_status(
+                                rules, tree, ep.pid, remote_ip, remote_port);
                         }
 
                         if (idx != INVALID_IDX) {
@@ -682,7 +677,7 @@ private:
                             } else {
                                 pj["name"] = "unknown";
                             }
-                            pj["excluded"] = rule.excluded_pids.count(pid) > 0;
+                            pj["excluded"] = rule.excluded_pids.contains(pid);
                             rj["matched_pids"].push_back(pj);
                         }
                         j.push_back(rj);
@@ -704,7 +699,7 @@ private:
 
                 // Generate id if not provided (frontend creates don't send id)
                 if (new_rule.id.empty()) {
-                    new_rule.id = "rule_" + std::to_string(
+                    new_rule.id = std::format("rule_{}",
                         std::chrono::steady_clock::now().time_since_epoch().count());
                 }
 
@@ -918,7 +913,7 @@ private:
                 auto body = json::parse(req.body);
                 ProxyGroup group;
                 group.id = config_manager_.get_v2().next_group_id++;
-                group.name = body.value("name", "group_" + std::to_string(group.id));
+                group.name = body.value("name", std::format("group_{}", group.id));
                 group.host = body.value("host", "127.0.0.1");
                 group.port = body.value("port", 7890);
                 group.type = body.value("type", "socks5");
@@ -1033,7 +1028,8 @@ private:
                 uint32_t target_id = body.value("target_group_id", 0u);
 
                 auto& cfg = config_manager_.get_v2();
-                bool source_exists = false, target_exists = false;
+                bool source_exists = false;
+                bool target_exists = false;
                 for (const auto& g : cfg.proxy_groups) {
                     if (g.id == source_id) source_exists = true;
                     if (g.id == target_id) target_exists = true;
@@ -1260,14 +1256,13 @@ private:
         server_.Get("/api/env", [](const httplib::Request&, httplib::Response& res) {
             json j;
             auto get_env = [](const char* name) -> std::string {
-                char* val = nullptr;
-                size_t len = 0;
-                if (_dupenv_s(&val, &len, name) == 0 && val != nullptr) {
-                    std::string result(val);
-                    free(val);
-                    return result;
-                }
-                return "";
+                // GetEnvironmentVariableA returns buffer size (including NUL)
+                // on success, 0 on not-set / error. RAII via std::string.
+                DWORD size = GetEnvironmentVariableA(name, nullptr, 0);
+                if (size == 0) return "";
+                std::string result(size - 1, '\0');
+                GetEnvironmentVariableA(name, result.data(), size);
+                return result;
             };
             j["HTTP_PROXY"] = get_env("HTTP_PROXY");
             j["HTTPS_PROXY"] = get_env("HTTPS_PROXY");
@@ -1424,7 +1419,7 @@ public:
     bool start() {
         if (running_) return true;
         running_ = true;
-        server_thread_ = std::thread([this]() {
+        server_thread_ = std::jthread([this]() {
             PC_LOG_INFO("HTTP API server starting on port {}", port_);
             if (!server_.listen("127.0.0.1", port_)) {
                 PC_LOG_ERROR("Failed to start HTTP server on port {}", port_);

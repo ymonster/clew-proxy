@@ -25,7 +25,9 @@
 #include <thread>
 #include <functional>
 #include <chrono>
+#include <cstddef>
 #include <cstring>
+#include <vector>
 #include "core/log.hpp"
 
 #pragma comment(lib, "advapi32.lib")
@@ -56,11 +58,13 @@ public:
         // Clean up orphaned session
         cleanup_session();
 
-        // Start trace session
+        // Start trace session. EVENT_TRACE_PROPERTIES is a variable-size struct
+        // (fixed header + trailing LoggerName buffer); use a byte vector as
+        // RAII-managed backing storage. value-initialized to zero (≡ calloc).
         const size_t props_size = sizeof(EVENT_TRACE_PROPERTIES) +
                                   (wcslen(SESSION_NAME) + 1) * sizeof(wchar_t);
-        auto* props = static_cast<EVENT_TRACE_PROPERTIES*>(calloc(1, props_size));
-        if (!props) return false;
+        std::vector<std::byte> props_buf(props_size);
+        auto* props = reinterpret_cast<EVENT_TRACE_PROPERTIES*>(props_buf.data());
 
         props->Wnode.BufferSize = static_cast<ULONG>(props_size);
         props->Wnode.Flags = WNODE_FLAG_TRACED_GUID;
@@ -73,7 +77,6 @@ public:
         props->FlushTimer = 1;
 
         ULONG status = StartTraceW(&session_handle_, SESSION_NAME, props);
-        free(props);
 
         if (status != ERROR_SUCCESS) {
             PC_LOG_ERROR("[ETW] StartTrace failed: {}", status);
@@ -111,7 +114,7 @@ public:
 
         // ProcessTrace blocks — run on dedicated thread
         running_ = true;
-        trace_thread_ = std::thread([this]() {
+        trace_thread_ = std::jthread([this]() {
             ULONG rc = ProcessTrace(&trace_handle_, 1, nullptr, nullptr);
             if (rc != ERROR_SUCCESS && rc != ERROR_CANCELLED && running_)
                 PC_LOG_WARN("[ETW] ProcessTrace returned: {}", rc);
@@ -149,7 +152,7 @@ private:
     std::atomic<bool> running_{false};
     TRACEHANDLE session_handle_{0};
     TRACEHANDLE trace_handle_{INVALID_PROCESSTRACE_HANDLE};
-    std::thread trace_thread_;
+    std::jthread trace_thread_;
 
     static void WINAPI event_record_callback(PEVENT_RECORD pEvent) {
         auto* self = static_cast<etw_consumer*>(pEvent->UserContext);
@@ -221,33 +224,37 @@ private:
         return (self && self->running_) ? TRUE : FALSE;
     }
 
-    void cleanup_session() {
-        const size_t buf_size = sizeof(EVENT_TRACE_PROPERTIES) +
-                                (wcslen(SESSION_NAME) + 1) * sizeof(wchar_t);
-        auto* props = static_cast<EVENT_TRACE_PROPERTIES*>(calloc(1, buf_size));
-        if (props) {
+    void cleanup_session() noexcept {
+        try {
+            const size_t buf_size = sizeof(EVENT_TRACE_PROPERTIES) +
+                                    (wcslen(SESSION_NAME) + 1) * sizeof(wchar_t);
+            std::vector<std::byte> props_buf(buf_size);
+            auto* props = reinterpret_cast<EVENT_TRACE_PROPERTIES*>(props_buf.data());
             props->Wnode.BufferSize = static_cast<ULONG>(buf_size);
             props->LoggerNameOffset = sizeof(EVENT_TRACE_PROPERTIES);
             ControlTraceW(0, SESSION_NAME, props, EVENT_TRACE_CONTROL_STOP);
-            free(props);
+        } catch (const std::bad_alloc&) {
+            // Cleanup on OOM — cannot allocate, skip silently
         }
     }
 
-    void stop_session() {
-        if (session_handle_ != 0) {
-            EnableTraceEx2(session_handle_, &KERNEL_PROCESS_GUID,
-                           EVENT_CONTROL_CODE_DISABLE_PROVIDER, 0, 0, 0, 0, nullptr);
+    void stop_session() noexcept {
+        if (session_handle_ == 0) return;
+        EnableTraceEx2(session_handle_, &KERNEL_PROCESS_GUID,
+                       EVENT_CONTROL_CODE_DISABLE_PROVIDER, 0, 0, 0, 0, nullptr);
+        try {
             const size_t buf_size = sizeof(EVENT_TRACE_PROPERTIES) +
                                     (wcslen(SESSION_NAME) + 1) * sizeof(wchar_t);
-            auto* props = static_cast<EVENT_TRACE_PROPERTIES*>(calloc(1, buf_size));
-            if (props) {
-                props->Wnode.BufferSize = static_cast<ULONG>(buf_size);
-                props->LoggerNameOffset = sizeof(EVENT_TRACE_PROPERTIES);
-                ControlTraceW(session_handle_, nullptr, props, EVENT_TRACE_CONTROL_STOP);
-                free(props);
-            }
-            session_handle_ = 0;
+            std::vector<std::byte> props_buf(buf_size);
+            auto* props = reinterpret_cast<EVENT_TRACE_PROPERTIES*>(props_buf.data());
+            props->Wnode.BufferSize = static_cast<ULONG>(buf_size);
+            props->LoggerNameOffset = sizeof(EVENT_TRACE_PROPERTIES);
+            ControlTraceW(session_handle_, nullptr, props, EVENT_TRACE_CONTROL_STOP);
+        } catch (const std::bad_alloc&) {
+            // OOM during shutdown — skip silently; kernel session will be
+            // reaped next start() via cleanup_session orphan handling
         }
+        session_handle_ = 0;
     }
 };
 

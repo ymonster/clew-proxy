@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted, computed } from 'vue'
+import { ref, watch, onMounted, onUnmounted, computed, useId } from 'vue'
 // JSON-only Monaco build: import the core API + JSON language contribution only,
 // so Vite can tree-shake away the 80+ unused languages.
 import * as monaco from 'monaco-editor/esm/vs/editor/editor.api.js'
@@ -24,6 +24,7 @@ if (!globalScope.MonacoEnvironment) {
 
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { Label } from '@/components/ui/label'
 import { getConfig, updateConfig } from '@/api/client'
 import { Save } from 'lucide-vue-next'
 import { useTheme } from '@/composables/useTheme'
@@ -46,6 +47,10 @@ const dnsEnabled = ref(false)
 const dnsMode = ref('forwarder')
 const dnsUpstream = ref('8.8.8.8')
 const dnsSaveMessage = ref<string | null>(null)
+
+// a11y: unique ids for label/field association
+const dnsModeId = useId()
+const dnsUpstreamId = useId()
 
 const hasUnsavedChanges = computed(() => {
   return currentContent.value !== savedContent.value
@@ -256,8 +261,9 @@ onUnmounted(() => {
 
             <div v-if="dnsEnabled" class="mt-3 pl-0 space-y-3">
               <div class="flex items-center gap-3">
-                <label class="text-xs text-slate-500 dark:text-slate-400 w-20 shrink-0">Mode</label>
+                <Label :for="dnsModeId" class="text-xs text-slate-500 dark:text-slate-400 w-20 shrink-0">Mode</Label>
                 <select
+                  :id="dnsModeId"
                   v-model="dnsMode"
                   @change="saveDns"
                   class="h-8 px-2 text-sm border border-slate-200 dark:border-slate-700 rounded bg-slate-50 dark:bg-[#101922] text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-blue-500"
@@ -266,8 +272,9 @@ onUnmounted(() => {
                 </select>
               </div>
               <div class="flex items-center gap-3">
-                <label class="text-xs text-slate-500 dark:text-slate-400 w-20 shrink-0">Upstream</label>
+                <Label :for="dnsUpstreamId" class="text-xs text-slate-500 dark:text-slate-400 w-20 shrink-0">Upstream</Label>
                 <input
+                  :id="dnsUpstreamId"
                   v-model="dnsUpstream"
                   @change="saveDns"
                   type="text"

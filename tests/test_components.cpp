@@ -33,7 +33,8 @@
 // Minimal test framework
 // ============================================================
 
-static int g_pass = 0, g_fail = 0;
+static int g_pass = 0;
+static int g_fail = 0;
 static std::vector<std::string> g_errors;
 
 #define TEST(name) \

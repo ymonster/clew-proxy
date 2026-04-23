@@ -382,7 +382,8 @@ public:
             }
         }
 
-        int x, y;
+        int x;
+        int y;
         if (init_x_ >= 0 && init_y_ >= 0) {
             x = init_x_;
             y = init_y_;

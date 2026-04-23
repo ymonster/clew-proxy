@@ -102,6 +102,22 @@ private:
     };
     std::unordered_map<uint16_t, PendingQuery> pending_;
 
+    // Extract the queried domain name from a DNS query message for logging.
+    // Returns empty string if the message is too short or malformed.
+    static std::string parse_dns_qname(const uint8_t* buf, size_t n) {
+        std::string qname;
+        if (n <= 12) return qname;
+        size_t pos = 12;
+        while (pos < n && buf[pos] != 0) {
+            uint8_t len = buf[pos++];
+            if (pos + len > n) break;
+            if (!qname.empty()) qname += '.';
+            qname.append(reinterpret_cast<const char*>(buf + pos), len);
+            pos += len;
+        }
+        return qname;
+    }
+
     // Client → SOCKS5 → DNS server
     asio::awaitable<void> query_loop() {
         uint8_t buf[4096];
@@ -126,18 +142,7 @@ private:
 
             uint16_t tx_id = (static_cast<uint16_t>(buf[0]) << 8) | buf[1];
 
-            // Extract queried domain name for logging
-            std::string qname;
-            if (n > 12) {
-                size_t pos = 12;
-                while (pos < n && buf[pos] != 0) {
-                    uint8_t len = buf[pos++];
-                    if (pos + len > n) break;
-                    if (!qname.empty()) qname += '.';
-                    qname.append(reinterpret_cast<const char*>(buf + pos), len);
-                    pos += len;
-                }
-            }
+            std::string qname = parse_dns_qname(buf, n);
             PC_LOG_DEBUG("[DNS-FWD] Q tx={:#06x} {} from {}:{}",
                           tx_id, qname, client_ep.address().to_string(), client_ep.port());
 

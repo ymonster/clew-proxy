@@ -10,6 +10,7 @@
 // Rule engine sets group_id/flags when processes start or rules change.
 
 #include <string>
+#include <format>
 #include <vector>
 #include <unordered_set>
 #include <optional>
@@ -29,12 +30,14 @@ namespace clew {
 inline bool wildcard_match(const std::string& pattern, const std::string& text,
                            bool case_insensitive = true)
 {
-    auto to_lower = [](char c) -> char {
+    auto to_lower = [](char c) {
         return static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     };
 
-    size_t pi = 0, ti = 0;
-    size_t star_pi = std::string::npos, star_ti = 0;
+    size_t pi = 0;
+    size_t ti = 0;
+    size_t star_pi = std::string::npos;
+    size_t star_ti = 0;
 
     while (ti < text.size()) {
         if (pi < pattern.size()) {
@@ -235,8 +238,8 @@ public:
 
         for (auto& rule : auto_rules_) {
             if (!rule.enabled) continue;
-            if (rule.excluded_pids.count(entry.pid)) continue;
-            if (rule.matched_pids.count(entry.pid)) continue;
+            if (rule.excluded_pids.contains(entry.pid)) continue;
+            if (rule.matched_pids.contains(entry.pid)) continue;
 
             bool name_match = false;
             bool tree_match = false;
@@ -254,7 +257,7 @@ public:
 
             // Tree inheritance: parent is already matched by this rule
             if (!name_match && rule.hack_tree && entry.parent_pid != 0) {
-                if (rule.matched_pids.count(entry.parent_pid)) {
+                if (rule.matched_pids.contains(entry.parent_pid)) {
                     tree_match = true;
                 }
             }
@@ -288,7 +291,7 @@ public:
 
                     PC_LOG_INFO("[RULE] Manual tree-inherit: PID={} ({}) from parent PID={} group={}",
                                  entry.pid, name, entry.parent_pid, parent.group_id);
-                    return "manual:tree:" + std::to_string(entry.parent_pid);
+                    return std::format("manual:tree:{}", entry.parent_pid);
                 }
             }
         }
@@ -357,7 +360,7 @@ public:
 
         // Auto rule: check protocol field
         for (const auto& rule : auto_rules_) {
-            if (rule.matched_pids.count(pid)) {
+            if (rule.matched_pids.contains(pid)) {
                 if (proto == "tcp") return rule.matches_tcp();
                 if (proto == "udp") return rule.matches_udp();
                 return true;
@@ -378,13 +381,13 @@ public:
 
         if (entry.has_flag(entry_flags::MANUAL_HIJACK)) {
             result.rule_type = "manual";
-            result.rule_id = "manual:" + std::to_string(pid);
+            result.rule_id = std::format("manual:{}", pid);
             return result;
         }
 
         // Find which auto rule matched this PID
         for (const auto& rule : auto_rules_) {
-            if (rule.matched_pids.count(pid)) {
+            if (rule.matched_pids.contains(pid)) {
                 result.rule_type = "auto";
                 result.rule_id = rule.id;
                 return result;
@@ -446,48 +449,38 @@ private:
 
     // Apply a single auto rule to all alive entries
     void apply_single_rule(flat_tree& tree, AutoRule& rule) {
-        if (!rule.hack_tree) {
-            // Simple name match
-            for (uint32_t i = 0; i < tree.entries().size(); i++) {
-                const auto& entry = tree.entries()[i];
-                if (!entry.alive || rule.excluded_pids.count(entry.pid)) continue;
+        // Single scan: collect matches via guard clauses. For hack_tree mode
+        // we stage them in `name_matched` first; otherwise insert directly.
+        std::unordered_set<DWORD> name_matched;
 
-                std::string name(entry.name_u8);
-                if (!rule.process_name.empty() && wildcard_match(rule.process_name, name)) {
-                    if (!rule.cmdline_pattern.empty() && !check_cmdline(tree, i, rule)) continue;
-                    if (!rule.image_path_pattern.empty() && !check_image_path(tree, i, rule)) continue;
-                    rule.matched_pids.insert(entry.pid);
-                    mark_proxied(tree, i, rule);
-                }
+        for (uint32_t i = 0; i < tree.entries().size(); i++) {
+            const auto& entry = tree.entries()[i];
+
+            if (!entry.alive || rule.excluded_pids.contains(entry.pid)) continue;
+
+            if (!rule.process_name.empty() && !wildcard_match(rule.process_name, entry.name_u8)) continue;
+            if (!rule.cmdline_pattern.empty() && !check_cmdline(tree, i, rule)) continue;
+            if (!rule.image_path_pattern.empty() && !check_image_path(tree, i, rule)) continue;
+
+            if (rule.hack_tree) {
+                name_matched.insert(entry.pid);
+            } else {
+                rule.matched_pids.insert(entry.pid);
+                mark_proxied(tree, i, rule);
             }
-        } else {
-            // hack_tree: name match → find roots → expand descendants
-            std::unordered_set<DWORD> name_matched;
+        }
 
-            // Step 1: Find name-matching PIDs
-            for (uint32_t i = 0; i < tree.entries().size(); i++) {
-                const auto& entry = tree.entries()[i];
-                if (!entry.alive || rule.excluded_pids.count(entry.pid)) continue;
-                std::string name(entry.name_u8);
-                if (!rule.process_name.empty() && wildcard_match(rule.process_name, name)) {
-                    if (!rule.cmdline_pattern.empty() && !check_cmdline(tree, i, rule)) continue;
-                    if (!rule.image_path_pattern.empty() && !check_image_path(tree, i, rule)) continue;
-                    name_matched.insert(entry.pid);
-                }
-            }
-
-            // Step 2: Find roots (parent not in name_matched)
+        // hack_tree mode: find roots (parent not matched) and expand descendants.
+        if (rule.hack_tree) {
             for (DWORD pid : name_matched) {
                 uint32_t idx = tree.find_by_pid(pid);
                 if (idx == INVALID_IDX) continue;
                 const auto& entry = tree.at(idx);
 
-                bool parent_matched = name_matched.count(entry.parent_pid) > 0;
                 rule.matched_pids.insert(pid);
                 mark_proxied(tree, idx, rule);
 
-                // Step 3: If this is a root, expand all descendants
-                if (!parent_matched) {
+                if (!name_matched.contains(entry.parent_pid)) {
                     expand_descendants(tree, idx, rule);
                 }
             }
@@ -501,8 +494,8 @@ private:
     // Expand all descendants of an entry via LC-RS traversal
     void expand_descendants(flat_tree& tree, uint32_t idx, AutoRule& rule) {
         tree.visit_descendants(idx, [&](uint32_t child_idx, const process_entry& child) {
-            if (rule.excluded_pids.count(child.pid)) return;
-            if (rule.matched_pids.count(child.pid)) return;
+            if (rule.excluded_pids.contains(child.pid)) return;
+            if (rule.matched_pids.contains(child.pid)) return;
             rule.matched_pids.insert(child.pid);
             mark_proxied(tree, child_idx, rule);
         });

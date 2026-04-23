@@ -8,6 +8,7 @@
 #include <ws2tcpip.h>
 #include <iphlpapi.h>
 #include <windows.h>
+#include <cstddef>
 #include <vector>
 #include <string>
 #include "core/log.hpp"
@@ -55,8 +56,6 @@ class tcp_table {
 public:
     static std::vector<tcp_connection> get_connections(DWORD filter_pid = 0) {
         std::vector<tcp_connection> result;
-
-        PMIB_TCPTABLE_OWNER_PID tcp_table = nullptr;
         DWORD size = 0;
 
         DWORD ret = GetExtendedTcpTable(nullptr, &size, FALSE, AF_INET,
@@ -66,17 +65,14 @@ public:
             return result;
         }
 
-        tcp_table = (PMIB_TCPTABLE_OWNER_PID)malloc(size);
-        if (!tcp_table) {
-            PC_LOG_ERROR("Failed to allocate memory for TCP table");
-            return result;
-        }
+        // RAII backing storage for the variable-size MIB_TCPTABLE_OWNER_PID.
+        std::vector<std::byte> buf(size);
+        auto* tcp_table = reinterpret_cast<PMIB_TCPTABLE_OWNER_PID>(buf.data());
 
         ret = GetExtendedTcpTable(tcp_table, &size, FALSE, AF_INET,
                                    TCP_TABLE_OWNER_PID_ALL, 0);
         if (ret != NO_ERROR) {
             PC_LOG_ERROR("GetExtendedTcpTable failed: {}", ret);
-            free(tcp_table);
             return result;
         }
 
@@ -94,7 +90,6 @@ public:
             result.push_back(conn);
         }
 
-        free(tcp_table);
         return result;
     }
 

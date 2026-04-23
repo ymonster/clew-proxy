@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <format>
 #include <vector>
 #include <unordered_map>
 #include <fstream>
@@ -278,7 +279,7 @@ private:
                 // Create a new group for this unique proxy target
                 ProxyGroup new_group;
                 new_group.id = v2_config_.next_group_id++;
-                new_group.name = "group_" + std::to_string(new_group.id);
+                new_group.name = std::format("group_{}", new_group.id);
                 new_group.host = rule.proxy.host;
                 new_group.port = rule.proxy.port;
                 new_group.type = rule.proxy.type;

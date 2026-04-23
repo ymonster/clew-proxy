@@ -5,6 +5,7 @@ import { X } from 'lucide-vue-next'
 const props = defineProps<{
   modelValue: string[]
   placeholder?: string
+  id?: string
 }>()
 
 const emit = defineEmits<{
@@ -49,6 +50,7 @@ function onKeydown(e: KeyboardEvent) {
       {{ tag }} <X class="w-3 h-3" />
     </span>
     <input
+      :id="id"
       v-model="inputValue"
       :placeholder="modelValue.length === 0 ? placeholder : ''"
       class="flex-1 min-w-[120px] bg-transparent text-xs font-mono text-slate-800 dark:text-white outline-none"

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <format>
 #include <vector>
 #include <cstdint>
 #include <unordered_set>
@@ -25,7 +26,10 @@ struct CidrRange {
     uint32_t mask = 0;
 
     static uint32_t ip_to_uint(const std::string& ip) {
-        uint32_t a, b, c, d;
+        uint32_t a;
+        uint32_t b;
+        uint32_t c;
+        uint32_t d;
         if (sscanf(ip.c_str(), "%u.%u.%u.%u", &a, &b, &c, &d) != 4) return 0;
         return (a << 24) | (b << 16) | (c << 8) | d;
     }
@@ -65,7 +69,7 @@ struct CidrRange {
         int prefix = 0;
         uint32_t m = mask;
         while (m & 0x80000000) { prefix++; m <<= 1; }
-        return uint_to_ip(network) + "/" + std::to_string(prefix);
+        return std::format("{}/{}", uint_to_ip(network), prefix);
     }
 };
 
@@ -104,7 +108,7 @@ struct PortRange {
 
     std::string to_string() const {
         if (start == end) return std::to_string(start);
-        return std::to_string(start) + "-" + std::to_string(end);
+        return std::format("{}-{}", start, end);
     }
 };
 
@@ -132,7 +136,7 @@ struct ProxyTarget {
     }
 
     std::string to_string() const {
-        return type + "://" + host + ":" + std::to_string(port);
+        return std::format("{}://{}:{}", type, host, port);
     }
 };
 
@@ -151,7 +155,7 @@ struct ProxyGroup {
     std::string test_url = "http://www.gstatic.com/generate_204";
 
     std::string to_string() const {
-        return type + "://" + host + ":" + std::to_string(port);
+        return std::format("{}://{}:{}", type, host, port);
     }
 };
 
@@ -175,6 +179,12 @@ NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(TrafficFilter, include_cidrs, ex
 // ============================================================
 
 struct AutoRule {
+    AutoRule() = default;
+    AutoRule(const AutoRule&) = default;
+    AutoRule& operator=(const AutoRule&) = default;
+    AutoRule(AutoRule&&) noexcept = default;
+    AutoRule& operator=(AutoRule&&) noexcept = default;
+
     std::string id;
     std::string name;
     bool enabled = true;

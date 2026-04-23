@@ -11,6 +11,7 @@
 #include <csignal>
 #include <vector>
 #include <string>
+#include <format>
 #include <thread>
 #include "core/log.hpp"
 #include "core/version.hpp"
@@ -42,6 +43,21 @@ static std::atomic<bool> g_running{true};
 static void signal_handler(int sig) {
     PC_LOG_INFO("Received signal {}, shutting down...", sig);
     g_running = false;
+}
+
+// Drain all pending Win32 messages. Returns false if WM_QUIT was observed
+// (caller should then stop its wait loop).
+static bool pump_pending_messages() {
+    MSG msg;
+    while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
+        if (msg.message == WM_QUIT) {
+            PostQuitMessage(static_cast<int>(msg.wParam));
+            return false;
+        }
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+    }
+    return true;
 }
 
 static bool is_elevated() {
@@ -280,14 +296,16 @@ int main(int argc, char* argv[]) {
 
 
     // Wire tree change → API snapshot update + SSE push
-    tree_mgr.set_on_tree_changed([&]() {
+    tree_mgr.set_on_tree_changed([&api_server]() {
         api_server.on_tree_changed();
     });
 
     // Config change callback (from Monaco editor save)
-    api_server.set_on_config_change([&](const clew::ConfigV2& cfg) {
+    api_server.set_on_config_change(
+        [&strand, &tree_mgr, &sync_groups, &sync_udp_groups, &pick_proxy_endpoint, &dns_mgr]
+        (const clew::ConfigV2& cfg) {
         // Reload auto rules on strand
-        asio::post(strand, [&, rules = cfg.auto_rules]() {
+        asio::post(strand, [&tree_mgr, rules = cfg.auto_rules]() {
             tree_mgr.rules().set_auto_rules(rules);
             tree_mgr.rules().apply_auto_rules(tree_mgr.tree());
         });
@@ -326,7 +344,7 @@ int main(int argc, char* argv[]) {
     tree_mgr.start();
 
     // Start io_context workers (processes tree_mgr initialization + acceptor + SOCKET events)
-    std::vector<std::thread> workers;
+    std::vector<std::jthread> workers;
     for (int i = 0; i < num_workers; i++) {
         workers.emplace_back([&ioc]() { ioc.run(); });
     }
@@ -340,7 +358,7 @@ int main(int argc, char* argv[]) {
         PC_LOG_INFO("Launching WebView2 GUI...");
         if (clew::is_webview2_available()) {
             const auto& ui_cfg = config.get_v2().ui;
-            std::wstring url = L"http://127.0.0.1:" + std::to_wstring(API_PORT) + L"/";
+            std::wstring url = std::format(L"http://127.0.0.1:{}/", API_PORT);
             gui = std::make_unique<clew::webview_app>(url, ui_cfg.window_width, ui_cfg.window_height);
             gui->set_title(L"Clew");
             gui->set_initial_rect(ui_cfg.window_x, ui_cfg.window_y, ui_cfg.window_width, ui_cfg.window_height);
@@ -348,8 +366,8 @@ int main(int argc, char* argv[]) {
 #ifdef NDEBUG
             gui->set_devtools_enabled(false);
 #endif
-            gui->set_on_close([&]() { g_running = false; });
-            gui->set_on_move_resize([&](int x, int y, int w, int h) {
+            gui->set_on_close([]() { g_running = false; });
+            gui->set_on_move_resize([&config](int x, int y, int w, int h) {
                 auto& ui = config.get_v2().ui;
                 ui.window_x = x; ui.window_y = y;
                 ui.window_width = w; ui.window_height = h;
@@ -370,18 +388,9 @@ int main(int argc, char* argv[]) {
     {
         auto t0 = std::chrono::steady_clock::now();
         while (!tree_mgr.is_initialized() && g_running) {
-            if (gui_created) {
-                MSG msg;
-                while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
-                    if (msg.message == WM_QUIT) {
-                        PostQuitMessage(static_cast<int>(msg.wParam));
-                        g_running = false;
-                        break;
-                    }
-                    TranslateMessage(&msg);
-                    DispatchMessage(&msg);
-                }
-                if (!g_running) break;
+            if (gui_created && !pump_pending_messages()) {
+                g_running = false;
+                break;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
             if (std::chrono::steady_clock::now() - t0 > std::chrono::seconds(30)) {
@@ -393,7 +402,7 @@ int main(int argc, char* argv[]) {
 
     if (tree_mgr.is_initialized()) {
         // Apply auto rules to initial tree
-        asio::post(strand, [&]() {
+        asio::post(strand, [&tree_mgr]() {
             tree_mgr.rules().apply_auto_rules(tree_mgr.tree());
             PC_LOG_INFO("Initial auto-rule scan complete");
         });

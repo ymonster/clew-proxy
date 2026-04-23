@@ -43,7 +43,12 @@ public:
         , reconcile_timer_(ioc)
     {}
 
-    ~process_tree_manager() { stop(); }
+    ~process_tree_manager() noexcept {
+        try { stop(); }
+        catch (const std::exception& e) {
+            PC_LOG_ERROR("[TreeMgr] destructor caught: {}", e.what());
+        } catch (...) {}
+    }
 
     // Set callback for tree changes (used to publish API snapshots, SSE events)
     void set_on_tree_changed(on_tree_changed_fn fn) { on_tree_changed_ = std::move(fn); }
@@ -239,7 +244,8 @@ private:
         for (const auto& r : snapshot)
             snap_map[r.pid] = &r;
 
-        int added = 0, removed = 0;
+        int added = 0;
+        int removed = 0;
 
         // Check for processes in snapshot but not in tree (missed START)
         for (const auto& r : snapshot) {
@@ -267,7 +273,7 @@ private:
         for (uint32_t i = 0; i < tree_.entries().size(); i++) {
             const auto& e = tree_.entries()[i];
             if (!e.alive) continue;
-            if (snap_map.find(e.pid) == snap_map.end()) {
+            if (!snap_map.contains(e.pid)) {
                 tree_.tombstone_entry(i);
                 removed++;
             }

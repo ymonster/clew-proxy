@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, useId } from 'vue'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent } from '@/components/ui/card'
 import {
@@ -18,6 +18,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import { Button } from '@/components/ui/button'
 import {
   getProxyGroups,
@@ -48,6 +49,13 @@ const formName = ref('')
 const formHost = ref('127.0.0.1')
 const formPort = ref('7890')
 const formTestUrl = ref('https://www.google.com')
+
+// a11y: unique ids for label/field association
+const nameId = useId()
+const hostId = useId()
+const portId = useId()
+const testUrlId = useId()
+const migrateTargetLabelId = useId()
 
 // Delete / migration dialog
 const deleteOpen = ref(false)
@@ -330,22 +338,22 @@ onMounted(fetchData)
         </DialogHeader>
         <div class="space-y-4 py-2">
           <div class="space-y-1">
-            <label class="text-sm font-medium text-slate-700 dark:text-slate-200">Name</label>
-            <Input v-model="formName" placeholder="my-proxy" />
+            <Label :for="nameId" class="text-slate-700 dark:text-slate-200">Name</Label>
+            <Input :id="nameId" v-model="formName" placeholder="my-proxy" />
           </div>
           <div class="flex gap-2">
             <div class="flex-1 space-y-1">
-              <label class="text-sm font-medium text-slate-700 dark:text-slate-200">Host</label>
-              <Input v-model="formHost" placeholder="127.0.0.1" class="font-mono" />
+              <Label :for="hostId" class="text-slate-700 dark:text-slate-200">Host</Label>
+              <Input :id="hostId" v-model="formHost" placeholder="127.0.0.1" class="font-mono" />
             </div>
             <div class="w-24 space-y-1">
-              <label class="text-sm font-medium text-slate-700 dark:text-slate-200">Port</label>
-              <Input v-model="formPort" placeholder="7890" class="font-mono" />
+              <Label :for="portId" class="text-slate-700 dark:text-slate-200">Port</Label>
+              <Input :id="portId" v-model="formPort" placeholder="7890" class="font-mono" />
             </div>
           </div>
           <div class="space-y-1">
-            <label class="text-sm font-medium text-slate-700 dark:text-slate-200">Test URL</label>
-            <Input v-model="formTestUrl" placeholder="https://www.google.com" class="font-mono text-sm" />
+            <Label :for="testUrlId" class="text-slate-700 dark:text-slate-200">Test URL</Label>
+            <Input :id="testUrlId" v-model="formTestUrl" placeholder="https://www.google.com" class="font-mono text-sm" />
           </div>
         </div>
         <DialogFooter class="gap-2 sm:gap-0">
@@ -392,9 +400,9 @@ onMounted(fetchData)
           </div>
           <!-- Target group selector -->
           <div class="space-y-1 pt-2 border-t border-slate-200 dark:border-slate-800">
-            <label class="text-sm font-medium text-slate-700 dark:text-slate-200">Migrate to</label>
+            <Label :for="migrateTargetLabelId" class="text-slate-700 dark:text-slate-200">Migrate to</Label>
             <Select v-model="migrateTargetId">
-              <SelectTrigger>
+              <SelectTrigger :id="migrateTargetLabelId">
                 <SelectValue placeholder="Select target group" />
               </SelectTrigger>
               <SelectContent>
