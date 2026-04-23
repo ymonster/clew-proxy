@@ -68,21 +68,14 @@ public:
     size_t cleanup_expired(std::chrono::seconds timeout = std::chrono::seconds(120)) {
         auto now = std::chrono::steady_clock::now();
         std::unique_lock lk(mu_);
-        size_t removed = 0;
-        for (auto it = sessions_.begin(); it != sessions_.end(); ) {
-            auto age = std::chrono::duration_cast<std::chrono::seconds>(now - it->second.last_active);
-            // DNS (port 53) gets shorter timeout
-            auto effective_timeout = (it->second.orig_dst_port == htons(53))
+        // DNS (port 53) gets shorter timeout
+        return std::erase_if(sessions_, [&](const auto& kv) {
+            auto age = std::chrono::duration_cast<std::chrono::seconds>(now - kv.second.last_active);
+            auto effective_timeout = (kv.second.orig_dst_port == htons(53))
                                     ? std::chrono::seconds(10)
                                     : timeout;
-            if (age > effective_timeout) {
-                it = sessions_.erase(it);
-                removed++;
-            } else {
-                ++it;
-            }
-        }
-        return removed;
+            return age > effective_timeout;
+        });
     }
 
     // Get all active sessions (for API)

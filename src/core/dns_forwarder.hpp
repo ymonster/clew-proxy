@@ -161,7 +161,7 @@ private:
 
             // Encode as SOCKS5 UDP frame and send
             auto frame = socks5_udp::encode(dns_ip_net_, dns_port_, buf, n);
-            bool sent = co_await socks5_session_->async_send_udp(frame);
+            bool sent = co_await socks5_session_->async_send_udp(std::move(frame));
 
             if (sent) {
                 query_count_.fetch_add(1, std::memory_order_relaxed);

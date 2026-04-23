@@ -27,6 +27,13 @@ const rowData = ref<NetworkConnection[]>([])
 const filterText = ref('')
 const gridApi = shallowRef<GridApi | null>(null)
 
+function stateDotColor(state: string): string {
+  if (state === 'ESTABLISHED') return '#22c55e'
+  if (state === 'BOUND') return '#a855f7'
+  if (state === 'TIME_WAIT' || state === 'CLOSE_WAIT') return '#eab308'
+  return '#a1a1aa'
+}
+
 const gridTheme = computed(() =>
   isDark.value ? themeAlpine.withPart(colorSchemeDark) : themeAlpine
 )
@@ -93,13 +100,7 @@ const columnDefs = computed<ColDef<NetworkConnection>[]>(() => {
       cellRenderer: (params: { value: string }) => {
         const value = params.value
         if (!value) return ''
-        const dotColor = value === 'ESTABLISHED'
-          ? '#22c55e'
-          : value === 'BOUND'
-            ? '#a855f7'
-            : value === 'TIME_WAIT' || value === 'CLOSE_WAIT'
-              ? '#eab308'
-              : '#a1a1aa'
+        const dotColor = stateDotColor(value)
         return `<span style="display:inline-flex;align-items:center;gap:6px;"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${dotColor};"></span>${value}</span>`
       },
     },

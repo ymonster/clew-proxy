@@ -77,22 +77,21 @@ function ensureConnected() {
   if (!eventSource && !connectInFlight) void connect()
 }
 
+function sseOn<T extends SSEEventType>(event: T, handler: SSEHandler<T>) {
+  if (!handlers.has(event)) handlers.set(event, new Set())
+  handlers.get(event)!.add(handler as SSEHandler)
+}
+
+function sseOff<T extends SSEEventType>(event: T, handler: SSEHandler<T>) {
+  handlers.get(event)?.delete(handler as SSEHandler)
+}
+
 export function useSSE() {
   ensureConnected()
-
-  function on<T extends SSEEventType>(event: T, handler: SSEHandler<T>) {
-    if (!handlers.has(event)) handlers.set(event, new Set())
-    handlers.get(event)!.add(handler as SSEHandler)
-  }
-
-  function off<T extends SSEEventType>(event: T, handler: SSEHandler<T>) {
-    handlers.get(event)?.delete(handler as SSEHandler)
-  }
-
   return {
     connected: readonly(connected),
-    on,
-    off,
+    on: sseOn,
+    off: sseOff,
     connect,
   }
 }

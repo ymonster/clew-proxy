@@ -154,10 +154,11 @@ private:
             auto frame = socks5_udp::encode(
                 session->orig_dst_addr, dst_port_host,
                 buf, static_cast<size_t>(n));
+            auto frame_size = frame.size();
 
-            bool sent = co_await socks5->async_send_udp(frame);
+            bool sent = co_await socks5->async_send_udp(std::move(frame));
             PC_LOG_INFO("[UDP-RELAY] UP app_port={} dst_port={} {} bytes sent={}",
-                         app_port, dst_port_host, frame.size(), sent);
+                         app_port, dst_port_host, frame_size, sent);
             if (sent) {
                 upstream_count_.fetch_add(1, std::memory_order_relaxed);
                 session_table_.touch(app_port);

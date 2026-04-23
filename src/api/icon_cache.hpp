@@ -76,8 +76,8 @@ public:
         // Cache miss — extract icon (may be slow, ~5ms)
         auto png = extract_icon_png(exe_path);
 
-        std::lock_guard lock(mutex_);
-        auto [it, _] = cache_.emplace(key, std::move(png));
+        std::scoped_lock lock(mutex_);
+        auto [it, _] = cache_.try_emplace(key, std::move(png));
         return it->second;
     }
 
@@ -216,7 +216,7 @@ private:
         std::vector<uint8_t> result;
         if (!has_png_encoder_) return result;
 
-        auto* bmp = Gdiplus::Bitmap::FromHICON(hIcon);
+        std::unique_ptr<Gdiplus::Bitmap> bmp(Gdiplus::Bitmap::FromHICON(hIcon));
         if (!bmp) return result;
 
         constexpr int SIZE = 16;
@@ -224,7 +224,7 @@ private:
         {
             Gdiplus::Graphics g(&resized);
             g.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
-            g.DrawImage(bmp, 0, 0, SIZE, SIZE);
+            g.DrawImage(bmp.get(), 0, 0, SIZE, SIZE);
         }
 
         IStream* stream = nullptr;
@@ -243,8 +243,6 @@ private:
             }
             stream->Release();
         }
-
-        delete bmp;
         return result;
     }
 };

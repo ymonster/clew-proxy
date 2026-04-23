@@ -18,6 +18,7 @@ BASE = "http://127.0.0.1:18080/api"
 PROXY_HOST = "127.0.0.1"
 PROXY_PORT = 7890
 TEST_TARGET = "http://httpbin.org/ip"  # Returns requester's IP
+CURL_EXE = "curl.exe"
 
 passed = 0
 failed = 0
@@ -128,7 +129,7 @@ def test_create_rule():
     r = requests.post(f"{BASE}/auto-rules", json={
         "name": TEST_RULE_NAME,
         "enabled": True,
-        "process_name": "curl.exe",
+        "process_name": CURL_EXE,
         "cmdline_pattern": "",
         "image_path_pattern": "",
         "hack_tree": False,
@@ -181,7 +182,7 @@ def test_curl_hijacked():
 
     def find_curl(nodes):
         for node in nodes:
-            if node.get("name", "").lower() == "curl.exe":
+            if node.get("name", "").lower() == CURL_EXE:
                 return node
             child = find_curl(node.get("children", []))
             if child:
@@ -192,10 +193,10 @@ def test_curl_hijacked():
     # curl might have finished already, so just check if we can find connections
     r_tcp = requests.get(f"{BASE}/tcp")
     tcp_conns = r_tcp.json()
-    curl_conns = [c for c in tcp_conns if c.get("process_name", "").lower() == "curl.exe"]
+    curl_conns = [c for c in tcp_conns if c.get("process_name", "").lower() == CURL_EXE]
 
     # Wait for curl to finish
-    stdout, stderr = proc.communicate(timeout=15)
+    stdout, _ = proc.communicate(timeout=15)
     exit_code = proc.returncode
 
     # curl should have completed (either success or proxy error)
@@ -216,14 +217,14 @@ def test_curl_hijacked():
 def test_proxy_routing():
     # Direct request (no proxy)
     try:
-        direct = requests.get("http://httpbin.org/ip", timeout=10)
+        direct = requests.get(TEST_TARGET, timeout=10)
         direct_ip = direct.json().get("origin", "")
     except Exception:
         direct_ip = "unknown"
 
     # Request through Clew (curl.exe is hijacked by our rule)
     proc = subprocess.run(
-        ["curl", "-s", "--connect-timeout", "10", "http://httpbin.org/ip"],
+        ["curl", "-s", "--connect-timeout", "10", TEST_TARGET],
         capture_output=True, text=True, timeout=15
     )
 
@@ -235,7 +236,7 @@ def test_proxy_routing():
                 # If proxy is working, IPs should differ (unless proxy exits at same IP)
                 assert proxied_ip, "No IP returned from proxied request"
             else:
-                print(f"    (Cannot compare IPs, but request succeeded)")
+                print("    (Cannot compare IPs, but request succeeded)")
         except json.JSONDecodeError:
             print(f"    curl output: {proc.stdout[:200]}")
     else:
@@ -334,7 +335,7 @@ if __name__ == "__main__":
     print(f"\n{'=' * 60}")
     print(f"Results: {passed} passed, {failed} failed, {passed + failed} total")
     if errors:
-        print(f"\nFailures:")
+        print("\nFailures:")
         for e in errors:
             print(f"  - {e}")
     print(f"{'=' * 60}")

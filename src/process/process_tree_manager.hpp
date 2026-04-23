@@ -37,7 +37,7 @@ class process_tree_manager {
 public:
     using on_tree_changed_fn = std::function<void()>;
 
-    process_tree_manager(asio::io_context& ioc)
+    explicit process_tree_manager(asio::io_context& ioc)
         : ioc_(ioc)
         , strand_(asio::make_strand(ioc))
         , reconcile_timer_(ioc)
@@ -47,7 +47,9 @@ public:
         try { stop(); }
         catch (const std::exception& e) {
             PC_LOG_ERROR("[TreeMgr] destructor caught: {}", e.what());
-        } catch (...) {}
+        } catch (...) {
+            PC_LOG_ERROR("[TreeMgr] destructor caught non-std exception");
+        }
     }
 
     // Set callback for tree changes (used to publish API snapshots, SSE events)

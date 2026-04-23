@@ -208,7 +208,7 @@ TEST(tree_visit_descendants) {
     auto tree = make_test_tree();
     uint32_t chrome_idx = tree.find_by_pid(200);
     std::vector<DWORD> descendants;
-    tree.visit_descendants(chrome_idx, [&](uint32_t idx, const auto& entry) {
+    tree.visit_descendants(chrome_idx, [&descendants](uint32_t, const auto& entry) {
         descendants.push_back(entry.pid);
     });
     // Chrome 200 has children 201, 202
@@ -240,10 +240,10 @@ TEST(tree_compact) {
 using clew::rule_engine_v3;
 using clew::AutoRule;
 
-static AutoRule make_rule(const std::string& name, const std::string& process_name,
+static AutoRule make_rule(std::string_view name, std::string_view process_name,
                           bool hack_tree = false, uint32_t group_id = 1) {
     AutoRule r;
-    r.id = "rule_" + name;
+    r.id = std::format("rule_{}", name);
     r.name = name;
     r.enabled = true;
     r.process_name = process_name;
@@ -487,7 +487,7 @@ TEST(bug_tree_inherit_stale_matched_pid) {
     // Simulate: re-add chrome.exe(101) as spotify child, put back in matched_pids
     tree.tombstone(101, ft2);
     FILETIME ft3 = {2, 0};
-    uint32_t re_idx = tree.add_entry(101, 100, ft3, L"chrome.exe");
+    tree.add_entry(101, 100, ft3, L"chrome.exe");
     engine.apply_auto_rules(tree);
     ASSERT_TRUE(engine.auto_rules()[0].matched_pids.count(101) > 0);
 

@@ -40,6 +40,7 @@ const { current: statusMessage, pushError } = useStatusBus()
 // Window control (WebView2 postMessage)
 const isMaximized = ref(document.documentElement.classList.contains('maximized'))
 function windowCmd(cmd: string) {
+  // NOSONAR: chrome.webview type is augmented on Window (see declare global above)
   window.chrome?.webview?.postMessage(cmd)
 }
 // Watch for maximize class changes (set by C++ via execute_script)
@@ -140,15 +141,15 @@ async function fetchStatus() {
 
 async function onSelectProcess(pid: number | undefined) {
   selectedPid.value = pid
-  if (pid != null) {
-    try {
-      const detail = await getProcessDetail(pid)
-      if (selectedPid.value === pid) selectedProcess.value = detail
-    } catch {
-      if (selectedPid.value === pid) selectedProcess.value = null
-    }
-  } else {
+  if (pid == null) {
     selectedProcess.value = null
+    return
+  }
+  try {
+    const detail = await getProcessDetail(pid)
+    if (selectedPid.value === pid) selectedProcess.value = detail
+  } catch {
+    if (selectedPid.value === pid) selectedProcess.value = null
   }
 }
 

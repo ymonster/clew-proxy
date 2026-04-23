@@ -12,7 +12,7 @@ import JsonWorker from 'monaco-editor/esm/vs/language/json/json.worker?worker'
 interface MonacoEnv {
   MonacoEnvironment?: { getWorker: (workerId: string, label: string) => Worker }
 }
-const globalScope = self as unknown as MonacoEnv
+const globalScope = globalThis as unknown as MonacoEnv
 if (!globalScope.MonacoEnvironment) {
   globalScope.MonacoEnvironment = {
     getWorker(_workerId: string, label: string) {
@@ -120,11 +120,10 @@ async function saveConfig() {
       saveMessage.value = null
     }, 3000)
   } catch (err) {
-    const message = err instanceof SyntaxError
-      ? 'Invalid JSON syntax'
-      : err instanceof Error
-        ? err.message
-        : 'Failed to save config'
+    let message: string
+    if (err instanceof SyntaxError) message = 'Invalid JSON syntax'
+    else if (err instanceof Error) message = err.message
+    else message = 'Failed to save config'
     saveMessage.value = { type: 'error', text: message }
   } finally {
     saving.value = false

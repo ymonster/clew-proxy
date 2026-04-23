@@ -45,7 +45,7 @@ struct InterfaceDnsState {
 };
 
 // Parse "{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}" into GUID
-inline bool parse_guid_string(const std::string& s, GUID& out) {
+inline bool parse_guid_string(std::string_view s, GUID& out) {
     // IIDFromString wants wide string
     std::wstring w(s.begin(), s.end());
     return IIDFromString(w.c_str(), &out) == S_OK;
@@ -66,7 +66,7 @@ inline std::vector<InterfaceDnsState> enumerate_active_interfaces() {
     std::vector<InterfaceDnsState> result;
 
     ULONG buf_len = 15000;
-    std::unique_ptr<char[]> buf(new char[buf_len]);
+    auto buf = std::make_unique<char[]>(buf_len);
     auto adapters = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buf.get());
 
     ULONG flags = GAA_FLAG_INCLUDE_GATEWAYS | GAA_FLAG_SKIP_ANYCAST

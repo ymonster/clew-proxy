@@ -95,7 +95,7 @@ def build_notes(prev_tag: str, new_tag: str) -> str:
     )
 
 
-def package_zip(new_tag: str, zip_path: Path, staging: Path) -> None:
+def package_zip(zip_path: Path, staging: Path) -> None:
     if staging.exists():
         shutil.rmtree(staging)
     staging.mkdir(parents=True)
@@ -193,7 +193,7 @@ def main() -> None:
     if dry:
         print("  [dry] skipped")
     else:
-        package_zip(new_tag, zip_path, staging)
+        package_zip(zip_path, staging)
 
     # --- GitHub release ------------------------------------------------------
     print("\n== Create GitHub release ==")

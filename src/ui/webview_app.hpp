@@ -255,12 +255,11 @@ private:
             auto& rect = reinterpret_cast<NCCALCSIZE_PARAMS*>(lparam)->rgrc[0];
             HMONITOR mon = MonitorFromRect(&rect, MONITOR_DEFAULTTONEAREST);
             MONITORINFO mi = { sizeof(mi) };
-            if (GetMonitorInfoW(mon, &mi)) {
-                // Detect maximize: proposed rect covers or exceeds the full monitor rect
-                if (rect.left <= mi.rcMonitor.left && rect.top <= mi.rcMonitor.top &&
-                    rect.right >= mi.rcMonitor.right && rect.bottom >= mi.rcMonitor.bottom) {
-                    rect = mi.rcWork;  // constrain to work area (respects taskbar)
-                }
+            // Detect maximize: proposed rect covers or exceeds the full monitor rect
+            if (GetMonitorInfoW(mon, &mi) &&
+                rect.left <= mi.rcMonitor.left && rect.top <= mi.rcMonitor.top &&
+                rect.right >= mi.rcMonitor.right && rect.bottom >= mi.rcMonitor.bottom) {
+                rect = mi.rcWork;  // constrain to work area (respects taskbar)
             }
             return 0;
         }
@@ -334,13 +333,16 @@ private:
                         DestroyWindow(hwnd);
                     }
                     return 0;
+
+                default:
+                    break;  // fall through to DefWindowProc
             }
         }
         return DefWindowProc(hwnd, msg, wparam, lparam);
     }
 
 public:
-    webview_app(const std::wstring& url, int width = 1200, int height = 800)
+    explicit webview_app(const std::wstring& url, int width = 1200, int height = 800)
         : url_(url), width_(width), height_(height) {}
 
     ~webview_app() {
@@ -352,7 +354,7 @@ public:
         if (hwnd_) { DestroyWindow(hwnd_); hwnd_ = nullptr; }
     }
 
-    void set_title(const std::wstring& title) { title_ = title; }
+    void set_title(std::wstring_view title) { title_ = title; }
     void set_on_close(std::function<void()> callback) { on_close_ = std::move(callback); }
     void set_on_move_resize(std::function<void(int, int, int, int)> callback) { on_move_resize_ = std::move(callback); }
     void set_initial_rect(int x, int y, int w, int h) { init_x_ = x; init_y_ = y; width_ = w; height_ = h; }

@@ -117,15 +117,15 @@ inline std::vector<raw_process_record> ntquery_enumerate_processes() {
         raw_process_record rec;
         rec.pid = static_cast<DWORD>(reinterpret_cast<ULONG_PTR>(entry->UniqueProcessId));
         rec.parent_pid = static_cast<DWORD>(reinterpret_cast<ULONG_PTR>(entry->InheritedFromUniqueProcessId));
-        std::memcpy(&rec.create_time, &entry->CreateTime, sizeof(FILETIME));
+        rec.create_time = std::bit_cast<FILETIME>(entry->CreateTime);
 
         if (entry->ImageName.Buffer && entry->ImageName.Length > 0) {
             int len = entry->ImageName.Length / sizeof(wchar_t);
             if (len > 259) len = 259;
-            wcsncpy(rec.name, entry->ImageName.Buffer, len);
-            rec.name[len] = L'\0';
+            wcsncpy_s(rec.name, std::size(rec.name), entry->ImageName.Buffer, len);
         } else {
-            wcscpy(rec.name, (rec.pid == 0) ? L"System Idle Process" : L"System");
+            wcscpy_s(rec.name, std::size(rec.name),
+                     (rec.pid == 0) ? L"System Idle Process" : L"System");
         }
 
         result.push_back(rec);

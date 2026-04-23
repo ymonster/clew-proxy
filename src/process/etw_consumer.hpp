@@ -160,7 +160,6 @@ private:
         if (!IsEqualGUID(pEvent->EventHeader.ProviderId, KERNEL_PROCESS_GUID)) return;
 
         const USHORT id = pEvent->EventHeader.EventDescriptor.Id;
-        const BYTE version = pEvent->EventHeader.EventDescriptor.Version;
         const BYTE* data = static_cast<const BYTE*>(pEvent->UserData);
         const USHORT len = pEvent->UserDataLength;
 
@@ -186,8 +185,8 @@ private:
                     const wchar_t* img = reinterpret_cast<const wchar_t*>(data + off);
                     const wchar_t* slash = wcsrchr(img, L'\\');
                     const wchar_t* name = slash ? slash + 1 : img;
-                    wcsncpy(evt.image_name, name, 259);
-                    evt.image_name[259] = L'\0';
+                    wcsncpy_s(evt.image_name, std::size(evt.image_name),
+                              name, _TRUNCATE);
                     break;
                 }
             }

@@ -14,7 +14,7 @@ export async function initAuth(): Promise<void> {
     if (!data.auth_enabled) return
     let stored = localStorage.getItem(TOKEN_STORAGE_KEY)
     if (!stored) {
-      stored = window.prompt('Clew API token required (from clew.json auth.token):') || ''
+      stored = globalThis.prompt('Clew API token required (from clew.json auth.token):') || ''
       if (stored) localStorage.setItem(TOKEN_STORAGE_KEY, stored)
     }
     authToken = stored || null
@@ -116,12 +116,12 @@ export function batchHijack(pids: number[], action: 'hijack' | 'unhijack', group
 // -- TCP Connections --
 
 export function getTcpConnections(pid?: number): Promise<TcpConnection[]> {
-  const query = pid != null ? `?pid=${pid}` : ''
+  const query = pid == null ? '' : `?pid=${pid}`
   return request<TcpConnection[]>(`/tcp${query}`)
 }
 
 export function getUdpConnections(pid?: number): Promise<TcpConnection[]> {
-  const query = pid != null ? `?pid=${pid}` : ''
+  const query = pid == null ? '' : `?pid=${pid}`
   return request<TcpConnection[]>(`/udp${query}`)
 }
 

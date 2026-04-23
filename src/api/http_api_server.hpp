@@ -246,30 +246,31 @@ private:
         });
 
         // Auth middleware: when enabled, require Authorization: Bearer <token>
-        // for all /api/* routes except /api/bootstrap (used by clients to discover auth state).
+        // for all /api/... routes except /api/bootstrap (used by clients to discover auth state).
         server_.set_pre_routing_handler([this](const httplib::Request& req, httplib::Response& res) {
-            if (!req.path.starts_with("/api/")) return httplib::Server::HandlerResponse::Unhandled;
-            if (req.path == "/api/bootstrap") return httplib::Server::HandlerResponse::Unhandled;
+            using enum httplib::Server::HandlerResponse;
+            if (!req.path.starts_with("/api/")) return Unhandled;
+            if (req.path == "/api/bootstrap") return Unhandled;
 
             const auto& auth = config_manager_.get_v2().auth;
-            if (!auth.enabled || auth.token.empty()) return httplib::Server::HandlerResponse::Unhandled;
+            if (!auth.enabled || auth.token.empty()) return Unhandled;
 
             // Accept token via Authorization: Bearer <token>
             auto h = req.get_header_value("Authorization");
             constexpr std::string_view prefix = "Bearer ";
             if (h.size() > prefix.size() && std::string_view(h).substr(0, prefix.size()) == prefix
                 && std::string_view(h).substr(prefix.size()) == auth.token) {
-                return httplib::Server::HandlerResponse::Unhandled;
+                return Unhandled;
             }
             // Fallback: ?token=... query parameter (needed for EventSource/SSE which
             // cannot set custom headers).
             if (req.has_param("token") && req.get_param_value("token") == auth.token) {
-                return httplib::Server::HandlerResponse::Unhandled;
+                return Unhandled;
             }
 
             res.status = 401;
             res.set_content(R"({"error":"unauthorized"})", "application/json");
-            return httplib::Server::HandlerResponse::Handled;
+            return Handled;
         });
 
         // Prevent WebView2 from caching static files (index.html especially)
@@ -357,7 +358,7 @@ private:
             try {
                 auto result = strand_sync([this]() -> json {
                     const auto& tree = mgr_.tree();
-                    auto& rules = mgr_.rules();
+                    const auto& rules = mgr_.rules();
                     auto pids = rules.get_hijacked_pids(tree);
                     json j = json::array();
                     for (DWORD pid : pids) {
@@ -523,10 +524,10 @@ private:
 
                     for (const auto& conn : connections) {
                         // When showing all connections (no PID filter), skip LISTEN/unconnected
-                        if (filter_pid == 0) {
-                            if (conn.state == "LISTEN" || (conn.remote_ip == "0.0.0.0" && conn.remote_port == 0)) {
-                                continue;
-                            }
+                        if (filter_pid == 0 &&
+                            (conn.state == "LISTEN" ||
+                             (conn.remote_ip == "0.0.0.0" && conn.remote_port == 0))) {
+                            continue;
                         }
 
                         json c;
@@ -998,7 +999,9 @@ private:
                     }
                     return count;
                 });
-            } catch (...) {}
+            } catch (...) {
+                PC_LOG_WARN("[API] strand_sync threw during manual_count query");
+            }
 
             if (!referencing_rules.empty() || manual_count > 0) {
                 res.status = 409;
@@ -1027,7 +1030,7 @@ private:
                 auto body = json::parse(req.body);
                 uint32_t target_id = body.value("target_group_id", 0u);
 
-                auto& cfg = config_manager_.get_v2();
+                const auto& cfg = config_manager_.get_v2();
                 bool source_exists = false;
                 bool target_exists = false;
                 for (const auto& g : cfg.proxy_groups) {
@@ -1054,10 +1057,8 @@ private:
                     mgr_.rules().set_auto_rules(cfg.auto_rules);
                     mgr_.rules().apply_auto_rules(mgr_.tree());
                     // Delete source group
-                    auto& groups = cfg.proxy_groups;
-                    groups.erase(std::remove_if(groups.begin(), groups.end(),
-                                 [source_id](const ProxyGroup& g) { return g.id == source_id; }),
-                                 groups.end());
+                    std::erase_if(cfg.proxy_groups,
+                                  [source_id](const ProxyGroup& g) { return g.id == source_id; });
                     config_manager_.save();
                     publish_tree_snapshot();
                     broadcast_event("auto_rule_changed", json{{"action", "migrated"}});
@@ -1086,7 +1087,8 @@ private:
 
             // Parse test_url → host + port + path
             // Always use port 80 for HTTP HEAD test (HTTPS port 443 expects TLS, can't test with plain HTTP)
-            std::string test_host, test_path = "/";
+            std::string test_host;
+            std::string test_path = "/";
             uint16_t test_port = 80;
             {
                 std::string url = group->test_url;
@@ -1289,7 +1291,8 @@ private:
             ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
             if (GetOpenFileNameA(&ofn)) {
                 std::string full_path(file_path);
-                std::string dir, name;
+                std::string dir;
+                std::string name;
                 size_t last_sep = full_path.find_last_of("\\/");
                 if (last_sep != std::string::npos) {
                     dir = full_path.substr(0, last_sep + 1);
@@ -1340,7 +1343,7 @@ private:
             res.set_chunked_content_provider("text/event-stream",
                 [this](size_t, httplib::DataSink& sink) {
                     {
-                        std::lock_guard<std::mutex> lock(sse_mutex_);
+                        std::scoped_lock lock(sse_mutex_);
                         sse_clients_.push_back(&sink);
                     }
                     int keepalive_counter = 0;
@@ -1352,7 +1355,7 @@ private:
                         }
                     }
                     {
-                        std::lock_guard<std::mutex> lock(sse_mutex_);
+                        std::scoped_lock lock(sse_mutex_);
                         sse_clients_.erase(
                             std::remove(sse_clients_.begin(), sse_clients_.end(), &sink),
                             sse_clients_.end()
@@ -1376,7 +1379,7 @@ public:
         setup_routes();
     }
 
-    void set_static_dir(const std::string& dir) { static_dir_ = dir; }
+    void set_static_dir(std::string_view dir) { static_dir_ = dir; }
     void set_port_tracker(PortTracker* pt) { port_tracker_ = pt; }
     void set_udp_port_tracker(UdpPortTracker* pt) { udp_port_tracker_ = pt; }
     void set_icon_cache(icon_cache* ic) { icon_cache_ = ic; }
@@ -1385,7 +1388,7 @@ public:
     // Broadcast an SSE event to all connected clients.
     // Thread-safe: uses sse_mutex_.
     void broadcast_event(const std::string& event, const json& data) {
-        std::lock_guard<std::mutex> lock(sse_mutex_);
+        std::scoped_lock lock(sse_mutex_);
         std::string message = "event: " + event + "\ndata: " + data.dump() + "\n\n";
         for (auto* sink : sse_clients_) {
             if (sink->is_writable()) {

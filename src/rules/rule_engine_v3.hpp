@@ -95,7 +95,7 @@ inline bool cmdline_match(const std::string& pattern, const std::string& cmdline
         pos = end;
 
         // Each fragment must appear somewhere in cmdline
-        if (lower_cmdline.find(fragment) == std::string::npos) return false;
+        if (!lower_cmdline.contains(fragment)) return false;
     }
     return true;
 }
@@ -256,10 +256,9 @@ public:
             }
 
             // Tree inheritance: parent is already matched by this rule
-            if (!name_match && rule.hack_tree && entry.parent_pid != 0) {
-                if (rule.matched_pids.contains(entry.parent_pid)) {
-                    tree_match = true;
-                }
+            if (!name_match && rule.hack_tree && entry.parent_pid != 0 &&
+                rule.matched_pids.contains(entry.parent_pid)) {
+                tree_match = true;
             }
 
             if (name_match || tree_match) {
@@ -308,7 +307,7 @@ public:
     }
 
     // Exclude/unexclude a PID from a specific rule
-    bool exclude_pid(flat_tree& tree, const std::string& rule_id, DWORD pid) {
+    bool exclude_pid(flat_tree& tree, std::string_view rule_id, DWORD pid) {
         for (auto& rule : auto_rules_) {
             if (rule.id != rule_id) continue;
             rule.excluded_pids.insert(pid);
@@ -326,7 +325,7 @@ public:
         return false;
     }
 
-    bool unexclude_pid(const std::string& rule_id, DWORD pid) {
+    bool unexclude_pid(std::string_view rule_id, DWORD pid) {
         for (auto& rule : auto_rules_) {
             if (rule.id != rule_id) continue;
             rule.excluded_pids.erase(pid);
@@ -349,7 +348,7 @@ public:
     // Find which rule matched a PID (for API display)
     // Check if a PID should be proxied for a specific protocol ("tcp" or "udp").
     // Manual hijack always matches both protocols.
-    bool should_proxy_protocol(const flat_tree& tree, DWORD pid, const std::string& proto) const {
+    bool should_proxy_protocol(const flat_tree& tree, DWORD pid, std::string_view proto) const {
         uint32_t idx = tree.find_by_pid(pid);
         if (idx == INVALID_IDX) return false;
         const auto& entry = tree.at(idx);

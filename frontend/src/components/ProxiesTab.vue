@@ -131,7 +131,7 @@ async function onSaveGroup() {
     const data = {
       name: formName.value,
       host: formHost.value,
-      port: parseInt(formPort.value, 10) || 7890,
+      port: Number.parseInt(formPort.value, 10) || 7890,
       type: 'socks5' as const,
       test_url: formTestUrl.value,
     }
@@ -174,7 +174,7 @@ async function onMigrateAndDelete() {
   if (!deletingGroup.value || saving.value) return
   saving.value = true
   try {
-    await migrateProxyGroup(deletingGroup.value.id, parseInt(migrateTargetId.value, 10))
+    await migrateProxyGroup(deletingGroup.value.id, Number.parseInt(migrateTargetId.value, 10))
     deleteOpen.value = false
     await fetchData()
   } catch (e) {

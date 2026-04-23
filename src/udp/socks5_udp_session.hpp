@@ -123,7 +123,7 @@ public:
 
     // ---- Async IO (the only IO interfaces) ----
 
-    asio::awaitable<bool> async_send_udp(const std::vector<uint8_t>& frame) {
+    asio::awaitable<bool> async_send_udp(std::vector<uint8_t> frame) {
         if (!alive_.load(std::memory_order_acquire)) co_return false;
         auto local_port = udp_data_.local_endpoint().port();
         auto [ec, n] = co_await udp_data_.async_send_to(
@@ -196,7 +196,9 @@ private:
             uint8_t dummy[1];
             asio::error_code ec;
             tcp_control_.read_some(asio::buffer(dummy), ec);
-        } catch (...) {}
+        } catch (...) {
+            PC_LOG_DEBUG("[SOCKS5-UDP] TCP watchdog read_some threw; treating as control loss");
+        }
         if (alive_.exchange(false))
             PC_LOG_WARN("[SOCKS5-UDP] TCP control connection lost");
     }

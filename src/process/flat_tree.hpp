@@ -74,8 +74,7 @@ struct process_entry {
             name_u8[0] = '\0';
             return;
         }
-        strncpy(name_u8, utf8_name, sizeof(name_u8) - 1);
-        name_u8[sizeof(name_u8) - 1] = '\0';
+        strncpy_s(name_u8, sizeof(name_u8), utf8_name, _TRUNCATE);
     }
 
     bool is_proxied() const { return group_id != NO_PROXY; }

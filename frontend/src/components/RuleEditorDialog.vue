@@ -155,7 +155,7 @@ function toggleHackTree() {
 }
 
 const selectedGroup = computed(() =>
-  proxyGroups.value.find(g => g.id === parseInt(formProxyGroupId.value))
+  proxyGroups.value.find(g => g.id === Number.parseInt(formProxyGroupId.value))
 )
 const canSave = computed(() => formName.value.trim() && formProcessName.value.trim())
 
@@ -163,7 +163,7 @@ function onSave() {
   let proxy: ProxyTarget
   if (isCustomProxy.value && customProxyHost.value) {
     const parts = customProxyHost.value.split(':')
-    proxy = { type: 'socks5', host: parts[0] || '127.0.0.1', port: parseInt(parts[1] ?? '7890') || 7890 }
+    proxy = { type: 'socks5', host: parts[0] || '127.0.0.1', port: Number.parseInt(parts[1] ?? '7890') || 7890 }
   } else {
     const group = selectedGroup.value
     proxy = { type: group?.type ?? 'socks5', host: group?.host ?? '127.0.0.1', port: group?.port ?? 7890 }
@@ -182,7 +182,7 @@ function onSave() {
     image_path_pattern: formUseWorkDir.value ? formWorkDir.value : '',
     hack_tree: formHackTree.value,
     protocol: formProtocol.value,
-    proxy_group_id: parseInt(formProxyGroupId.value, 10),
+    proxy_group_id: Number.parseInt(formProxyGroupId.value, 10),
     proxy,
     dst_filter,
   })

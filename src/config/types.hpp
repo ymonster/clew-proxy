@@ -30,15 +30,14 @@ struct CidrRange {
         uint32_t b;
         uint32_t c;
         uint32_t d;
-        if (sscanf(ip.c_str(), "%u.%u.%u.%u", &a, &b, &c, &d) != 4) return 0;
+        if (sscanf_s(ip.c_str(), "%u.%u.%u.%u", &a, &b, &c, &d) != 4) return 0;
         return (a << 24) | (b << 16) | (c << 8) | d;
     }
 
     static std::string uint_to_ip(uint32_t ip) {
-        char buf[32];
-        snprintf(buf, sizeof(buf), "%u.%u.%u.%u",
-                 (ip >> 24) & 0xFF, (ip >> 16) & 0xFF, (ip >> 8) & 0xFF, ip & 0xFF);
-        return buf;
+        return std::format("{}.{}.{}.{}",
+                           (ip >> 24) & 0xFF, (ip >> 16) & 0xFF,
+                           (ip >> 8)  & 0xFF,  ip        & 0xFF);
     }
 
     // Parse "10.0.0.0/8" or "1.2.3.4"

@@ -62,7 +62,7 @@ static bool pump_pending_messages() {
 
 static bool is_elevated() {
     BOOL elevated = FALSE;
-    HANDLE token = NULL;
+    HANDLE token = nullptr;
     if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
         TOKEN_ELEVATION elevation;
         DWORD size;
@@ -124,8 +124,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int) {
 
 #ifndef NDEBUG
     AllocConsole();
-    freopen("CONOUT$", "w", stdout);
-    freopen("CONOUT$", "w", stderr);
+    FILE* fp_out = nullptr;
+    FILE* fp_err = nullptr;
+    freopen_s(&fp_out, "CONOUT$", "w", stdout);
+    freopen_s(&fp_err, "CONOUT$", "w", stderr);
 #endif
     opts.gui_mode = true;
 #else

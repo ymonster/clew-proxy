@@ -50,7 +50,7 @@ public:
 
     // Get or create session for an app_port. group_id used to look up proxy config.
     std::shared_ptr<Socks5UdpSession> get_or_create(uint16_t app_port, uint32_t group_id) {
-        std::lock_guard lk(mu_);
+        std::unique_lock lk(mu_);
 
         if (stopped_) return nullptr;
 
@@ -81,10 +81,9 @@ public:
         // Notify relay to spawn downstream coroutine — copy callback under lock, invoke outside
         auto cb = on_session_created_;
         if (cb) {
-            // Release lock before callback to avoid deadlock
-            mu_.unlock();
+            // Release lock before callback to avoid deadlock; unique_lock dtor is a no-op if !owns_lock
+            lk.unlock();
             cb(app_port, session);
-            mu_.lock();
         }
 
         return session;

@@ -33,7 +33,9 @@ public:
         try { stop(); }
         catch (const std::exception& e) {
             PC_LOG_ERROR("[DNS-MGR] destructor caught: {}", e.what());
-        } catch (...) {}
+        } catch (...) {
+            PC_LOG_ERROR("[DNS-MGR] destructor caught non-std exception");
+        }
     }
 
     DnsManager(const DnsManager&) = delete;

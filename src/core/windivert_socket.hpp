@@ -22,6 +22,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <format>
 #include <atomic>
 #include <unordered_map>
 #include <vector>
@@ -49,14 +50,13 @@ public:
     bool open() {
         DWORD self_pid = GetCurrentProcessId();
 
-        char filter[256];
-        snprintf(filter, sizeof(filter),
-                 "outbound and !loopback and tcp "
-                 "and event == CONNECT "
-                 "and processId != %u",
-                 self_pid);
+        auto filter = std::format(
+            "outbound and !loopback and tcp "
+            "and event == CONNECT "
+            "and processId != {}",
+            self_pid);
 
-        handle_ = WinDivertOpen(filter, WINDIVERT_LAYER_SOCKET, 0,
+        handle_ = WinDivertOpen(filter.c_str(), WINDIVERT_LAYER_SOCKET, 0,
                                 WINDIVERT_FLAG_SNIFF | WINDIVERT_FLAG_RECV_ONLY);
 
         if (handle_ == INVALID_HANDLE_VALUE) {
@@ -164,9 +164,8 @@ private:
                 if (err == ERROR_NO_DATA || err == ERROR_INVALID_HANDLE) break;
                 continue;
             }
-            auto addr_copy = addr;
-            asio::post(strand_, [this, addr_copy]() {
-                on_socket_event(addr_copy);
+            asio::post(strand_, [this, addr]() {
+                on_socket_event(addr);
             });
         }
     }
