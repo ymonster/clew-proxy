@@ -108,10 +108,20 @@ public:
                          local_ep.address().to_string(), local_ep.port(),
                          relay_endpoint_.address().to_string(), relay_endpoint_.port());
 
-            // Start TCP watchdog (detects control connection death)
-            std::thread([self = shared_from_this()]() {
-                self->watch_tcp_control();
-            }).detach();
+            // TCP watchdog: async read on the control socket; when it returns
+            // (EOF / reset / any error), flip alive_ false. Managed by the
+            // io_context that owns tcp_control_, no dedicated thread needed.
+            asio::co_spawn(tcp_control_.get_executor(),
+                [self = shared_from_this()]() -> asio::awaitable<void> {
+                    uint8_t dummy[1];
+                    auto [ec, n] = co_await self->tcp_control_.async_read_some(
+                        asio::buffer(dummy), asio::as_tuple(asio::use_awaitable));
+                    if (ec)
+                        PC_LOG_DEBUG("[SOCKS5-UDP] TCP watchdog detected control loss: {}",
+                                     ec.message());
+                    if (self->alive_.exchange(false))
+                        PC_LOG_WARN("[SOCKS5-UDP] TCP control connection lost");
+                }, asio::detached);
 
             return true;
 
@@ -191,17 +201,6 @@ private:
     std::atomic<std::chrono::steady_clock::time_point> last_active_{
         std::chrono::steady_clock::now()};
 
-    void watch_tcp_control() {
-        try {
-            uint8_t dummy[1];
-            asio::error_code ec;
-            tcp_control_.read_some(asio::buffer(dummy), ec);
-        } catch (...) {
-            PC_LOG_DEBUG("[SOCKS5-UDP] TCP watchdog read_some threw; treating as control loss");
-        }
-        if (alive_.exchange(false))
-            PC_LOG_WARN("[SOCKS5-UDP] TCP control connection lost");
-    }
 };
 
 } // namespace clew

@@ -1,14 +1,15 @@
 #pragma once
 
 #include <string>
+#include <string_view>
 #include <format>
 #include <vector>
-#include <unordered_map>
 #include <fstream>
 #include <filesystem>
 #include <optional>
 #include <nlohmann/json.hpp>
 #include "core/log.hpp"
+#include "core/string_hash.hpp"
 
 #include "config/types.hpp"
 
@@ -31,7 +32,7 @@ struct config {
         "127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12",
         "192.168.0.0/16", "169.254.0.0/16"
     };
-    std::unordered_map<std::string, process_rule> rules;
+    clew::string_map<process_rule> rules;
 };
 
 class config_manager {
@@ -62,25 +63,24 @@ private:
         // Migrate process rules → auto rules
         if (j.contains("rules")) {
             for (auto& [name, rule] : j["rules"].items()) {
-                bool hijack = rule.value("hijack", false);
-                if (hijack) {
-                    AutoRule ar;
-                    ar.id = "migrated_" + name;
-                    ar.name = name;
-                    ar.enabled = true;
-                    ar.process_name = name;
-                    ar.hack_tree = false;
-                    ar.proxy = v2.default_proxy;
+                if (!rule.value("hijack", false)) continue;
 
-                    // Migrate per-process excludes to dst_filter
-                    if (rule.contains("exclude")) {
-                        for (const auto& cidr_str : rule["exclude"]) {
-                            ar.dst_filter.exclude_cidrs.push_back(CidrRange::parse(cidr_str));
-                        }
+                AutoRule ar;
+                ar.id = "migrated_" + name;
+                ar.name = name;
+                ar.enabled = true;
+                ar.process_name = name;
+                ar.hack_tree = false;
+                ar.proxy = v2.default_proxy;
+
+                // Migrate per-process excludes to dst_filter
+                if (rule.contains("exclude")) {
+                    for (const auto& cidr_str : rule["exclude"]) {
+                        ar.dst_filter.exclude_cidrs.push_back(CidrRange::parse(cidr_str));
                     }
-
-                    v2.auto_rules.push_back(std::move(ar));
                 }
+
+                v2.auto_rules.push_back(std::move(ar));
             }
         }
 
@@ -220,11 +220,12 @@ public:
     config& get() { return v1_config_; }
     const config& get() const { return v1_config_; }
 
-    void set_rule(const std::string& process_name, const process_rule& rule) {
-        v1_config_.rules[process_name] = rule;
+    void set_rule(std::string_view process_name, const process_rule& rule) {
+        v1_config_.rules[std::string{process_name}] = rule;
     }
 
-    std::optional<process_rule> get_rule(const std::string& process_name) const {
+    std::optional<process_rule> get_rule(std::string_view process_name) const {
+        // Heterogeneous find — no std::string alloc for probe
         auto it = v1_config_.rules.find(process_name);
         if (it != v1_config_.rules.end()) return it->second;
         return std::nullopt;

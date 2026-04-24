@@ -9,16 +9,15 @@
 #include <dwmapi.h>
 #include <shellapi.h>
 #include <wrl.h>
+#ifdef CLEW_HAS_WEBVIEW2
+#include <WebView2.h>
+#include <WebView2EnvironmentOptions.h>
+#endif
 #include <string>
 #include <functional>
 #include "core/log.hpp"
 
 #pragma comment(lib, "dwmapi.lib")
-
-#ifdef CLEW_HAS_WEBVIEW2
-#include <WebView2.h>
-#include <WebView2EnvironmentOptions.h>
-#endif
 
 namespace clew {
 
@@ -281,10 +280,9 @@ private:
                     app->resize_webview();
                     // Notify frontend of maximize state for padding adjustment
                     if (app->initialized_) {
-                        if (wparam == SIZE_MAXIMIZED)
-                            app->execute_script(L"document.documentElement.classList.add('maximized')");
-                        else
-                            app->execute_script(L"document.documentElement.classList.remove('maximized')");
+                        app->execute_script(wparam == SIZE_MAXIMIZED
+                            ? L"document.documentElement.classList.add('maximized')"
+                            : L"document.documentElement.classList.remove('maximized')");
                     }
                     return 0;
 

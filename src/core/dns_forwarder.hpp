@@ -172,11 +172,9 @@ private:
             // Periodic cleanup
             if (query_count_ % 32 == 0) {
                 auto now = std::chrono::steady_clock::now();
-                for (auto it = pending_.begin(); it != pending_.end(); ) {
-                    if (now - it->second.sent_at > std::chrono::seconds(10))
-                        it = pending_.erase(it);
-                    else ++it;
-                }
+                std::erase_if(pending_, [now](const auto& kv) {
+                    return now - kv.second.sent_at > std::chrono::seconds(10);
+                });
             }
         }
     }

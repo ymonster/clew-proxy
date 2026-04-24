@@ -36,7 +36,8 @@ namespace clew {
 
 // Event data extracted from ETW callback
 struct etw_process_event {
-    enum type_t { START, STOP };
+    enum class type_t { START, STOP };
+    using enum type_t;  // allow etw_process_event::START / ::STOP at class scope
     type_t   type;
     DWORD    pid;
     DWORD    parent_pid;    // only valid for START
@@ -98,7 +99,7 @@ public:
 
         // Open trace for consumption
         EVENT_TRACE_LOGFILEW logfile{};
-        logfile.LoggerName = const_cast<LPWSTR>(SESSION_NAME);
+        logfile.LoggerName = SESSION_NAME;
         logfile.ProcessTraceMode = PROCESS_TRACE_MODE_EVENT_RECORD |
                                    PROCESS_TRACE_MODE_REAL_TIME;
         logfile.Context = this;
@@ -146,7 +147,9 @@ private:
     static constexpr ULONGLONG KEYWORD_PROCESS = 0x10;
     static constexpr USHORT EVENT_PROCESS_START = 1;
     static constexpr USHORT EVENT_PROCESS_STOP  = 2;
-    static inline const wchar_t SESSION_NAME[] = L"ClewETW";
+    // Non-const: EVENT_TRACE_LOGFILEW::LoggerName is typedef'd LPWSTR (non-const)
+    // even though the consumer path only reads it. Avoids const_cast at the call site.
+    static inline wchar_t SESSION_NAME[] = L"ClewETW";
 
     event_callback callback_;
     std::atomic<bool> running_{false};
@@ -155,7 +158,7 @@ private:
     std::jthread trace_thread_;
 
     static void WINAPI event_record_callback(PEVENT_RECORD pEvent) {
-        auto* self = static_cast<etw_consumer*>(pEvent->UserContext);
+        const auto* self = static_cast<const etw_consumer*>(pEvent->UserContext);
         if (!self || !self->running_) return;
         if (!IsEqualGUID(pEvent->EventHeader.ProviderId, KERNEL_PROCESS_GUID)) return;
 
@@ -219,7 +222,7 @@ private:
     }
 
     static ULONG WINAPI buffer_callback(PEVENT_TRACE_LOGFILEW logfile) {
-        auto* self = static_cast<etw_consumer*>(logfile->Context);
+        const auto* self = static_cast<const etw_consumer*>(logfile->Context);
         return (self && self->running_) ? TRUE : FALSE;
     }
 

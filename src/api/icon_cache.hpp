@@ -13,11 +13,14 @@
 #include <tlhelp32.h>
 
 #include <string>
+#include <string_view>
 #include <vector>
-#include <unordered_map>
 #include <mutex>
-#include <algorithm>
+#include <ranges>
+#include <cctype>
 #include "core/log.hpp"
+#include "core/scoped_exit.hpp"
+#include "core/string_hash.hpp"
 
 #pragma comment(lib, "gdiplus.lib")
 
@@ -64,51 +67,49 @@ public:
 
     // Get PNG icon bytes for an exe path. Thread-safe, cached.
     // Returns empty vector on failure.
-    const std::vector<uint8_t>& get_icon(const std::string& exe_path) {
-        std::string key = normalize_key(exe_path);
-
+    const std::vector<uint8_t>& get_icon(std::string_view exe_path) {
         {
-            std::lock_guard lock(mutex_);
-            auto it = cache_.find(key);
+            // Heterogeneous find: lowercase view built on stack, no std::string alloc on hit
+            std::string probe = normalize_key(exe_path);
+            std::scoped_lock lock(mutex_);
+            auto it = cache_.find(probe);
             if (it != cache_.end()) return it->second;
         }
 
         // Cache miss — extract icon (may be slow, ~5ms)
         auto png = extract_icon_png(exe_path);
+        std::string key = normalize_key(exe_path);
 
         std::scoped_lock lock(mutex_);
-        auto [it, _] = cache_.try_emplace(key, std::move(png));
+        auto [it, _] = cache_.try_emplace(std::move(key), std::move(png));
         return it->second;
     }
 
     // Lookup by exe name: find a cached entry whose key ends with the given name.
     // Falls back to extracting from a resolved path if provided.
-    const std::vector<uint8_t>& get_icon_by_name(const std::string& exe_name,
-                                                   const std::string& fallback_path = {}) {
-        std::string name_lower = exe_name;
-        std::transform(name_lower.begin(), name_lower.end(), name_lower.begin(),
-            [](unsigned char c) { return std::tolower(c); });
+    const std::vector<uint8_t>& get_icon_by_name(std::string_view exe_name,
+                                                 std::string_view fallback_path = {}) {
+        std::string name_lower = normalize_key(exe_name);
 
         {
-            std::lock_guard lock(mutex_);
-            // Check if we already have this name cached
-            auto it = name_cache_.find(name_lower);
+            std::scoped_lock lock(mutex_);
+            // Heterogeneous find on name_cache_ (no std::string construction on hit path)
+            auto it = name_cache_.find(std::string_view{name_lower});
             if (it != name_cache_.end()) {
-                auto cit = cache_.find(it->second);
+                auto cit = cache_.find(std::string_view{it->second});
                 if (cit != cache_.end()) return cit->second;
             }
         }
 
         // Need to find the exe path for this name
-        std::string resolved_path = fallback_path;
-        if (resolved_path.empty()) {
-            resolved_path = find_exe_path(exe_name);
-        }
+        std::string resolved_path = fallback_path.empty()
+            ? find_exe_path(exe_name)
+            : std::string{fallback_path};
 
         if (resolved_path.empty()) {
             // Return empty (cached to avoid repeated lookups)
-            std::lock_guard lock(mutex_);
-            name_cache_[name_lower] = "";
+            std::scoped_lock lock(mutex_);
+            name_cache_[std::move(name_lower)] = "";
             static const std::vector<uint8_t> empty;
             return empty;
         }
@@ -116,8 +117,8 @@ public:
         // Extract and cache
         const auto& result = get_icon(resolved_path);
 
-        std::lock_guard lock(mutex_);
-        name_cache_[name_lower] = normalize_key(resolved_path);
+        std::scoped_lock lock(mutex_);
+        name_cache_[std::move(name_lower)] = normalize_key(resolved_path);
         return result;
     }
 
@@ -127,12 +128,12 @@ private:
     bool has_png_encoder_ = false;
 
     std::mutex mutex_;
-    std::unordered_map<std::string, std::vector<uint8_t>> cache_;        // key: lowercase path
-    std::unordered_map<std::string, std::string> name_cache_;            // exe name -> path key
+    clew::string_map<std::vector<uint8_t>> cache_;       // key: lowercase path
+    clew::string_map<std::string>          name_cache_;  // exe name → path key
 
-    static std::string normalize_key(const std::string& path) {
-        std::string key = path;
-        std::transform(key.begin(), key.end(), key.begin(),
+    [[nodiscard]] static std::string normalize_key(std::string_view path) {
+        std::string key{path};
+        std::ranges::transform(key, key.begin(),
             [](unsigned char c) { return std::tolower(c); });
         return key;
     }
@@ -150,44 +151,42 @@ private:
         return result;
     }
 
-    static std::string find_exe_path(const std::string& exe_name) {
-        // Convert name to wide
-        int wlen = MultiByteToWideChar(CP_UTF8, 0, exe_name.c_str(), -1, nullptr, 0);
+    static std::string find_exe_path(std::string_view exe_name) {
+        // Convert name to wide (use explicit length; string_view is not null-terminated)
+        const int src_len = static_cast<int>(exe_name.size());
+        int wlen = MultiByteToWideChar(CP_UTF8, 0, exe_name.data(), src_len, nullptr, 0);
         if (wlen <= 0) return {};
-        std::wstring wname(wlen - 1, L'\0');
-        MultiByteToWideChar(CP_UTF8, 0, exe_name.c_str(), -1, wname.data(), wlen);
+        std::wstring wname(wlen, L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, exe_name.data(), src_len, wname.data(), wlen);
 
         // Snapshot processes
-        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-        if (snap == INVALID_HANDLE_VALUE) return {};
+        auto snap = wrap_handle(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
+        if (!snap) return {};
 
         PROCESSENTRY32W pe = {};
         pe.dwSize = sizeof(pe);
-        std::string result;
+        if (!Process32FirstW(snap.get(), &pe)) return {};
 
-        if (Process32FirstW(snap, &pe)) {
-            do {
-                if (_wcsicmp(pe.szExeFile, wname.c_str()) == 0) {
-                    HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pe.th32ProcessID);
-                    if (h && h != INVALID_HANDLE_VALUE) {
-                        result = exe_path_from_handle(h);
-                        CloseHandle(h);
-                    }
-                    if (!result.empty()) break;
-                }
-            } while (Process32NextW(snap, &pe));
-        }
-        CloseHandle(snap);
-        return result;
+        do {
+            if (_wcsicmp(pe.szExeFile, wname.c_str()) != 0) continue;
+            auto h = wrap_handle(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,
+                                             FALSE, pe.th32ProcessID));
+            if (!h) continue;
+            auto result = exe_path_from_handle(h.get());
+            if (!result.empty()) return result;
+        } while (Process32NextW(snap.get(), &pe));
+
+        return {};
     }
 
     // Extract icon from exe path, convert to PNG bytes
-    std::vector<uint8_t> extract_icon_png(const std::string& exe_path) {
-        // Convert to wide
-        int wlen = MultiByteToWideChar(CP_UTF8, 0, exe_path.c_str(), -1, nullptr, 0);
+    std::vector<uint8_t> extract_icon_png(std::string_view exe_path) {
+        // Convert to wide (explicit length; string_view is not null-terminated)
+        const int src_len = static_cast<int>(exe_path.size());
+        int wlen = MultiByteToWideChar(CP_UTF8, 0, exe_path.data(), src_len, nullptr, 0);
         if (wlen <= 0) return {};
-        std::wstring wpath(wlen - 1, L'\0');
-        MultiByteToWideChar(CP_UTF8, 0, exe_path.c_str(), -1, wpath.data(), wlen);
+        std::wstring wpath(wlen, L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, exe_path.data(), src_len, wpath.data(), wlen);
 
         // Try SHGetFileInfoW first
         HICON hIcon = nullptr;

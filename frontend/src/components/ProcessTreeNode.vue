@@ -132,6 +132,7 @@ function onUnhackTree(e: Event) {
         <img
           v-if="!iconFailed"
           :src="iconUrl"
+          :alt="`${node.name} icon`"
           class="w-4 h-4 mt-[1px] shrink-0"
           loading="lazy"
           @error="iconFailed = true"

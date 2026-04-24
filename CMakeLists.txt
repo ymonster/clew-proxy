@@ -80,9 +80,12 @@ link_directories(
     ${CMAKE_SOURCE_DIR}/WinDivert-2.2.2-A/x64
 )
 
-# Source files (header-only architecture, single translation unit)
+# Source files. Most of the codebase is header-only, but http_api_server
+# is hpp/cpp-split to keep main.cpp's translation unit from pulling in
+# the full httplib.h + route-handler implementation on every rebuild.
 set(CLEW_SOURCES
     src/main.cpp
+    src/api/http_api_server.cpp
 )
 
 # Embed the Clew icon via a Win32 resource file.

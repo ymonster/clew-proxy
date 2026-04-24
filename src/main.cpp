@@ -8,13 +8,15 @@
 #include <winsock2.h>
 #include <windows.h>
 #include <iostream>
-#include <csignal>
 #include <vector>
 #include <string>
+#include <string_view>
 #include <format>
+#include <span>
 #include <thread>
 #include "core/log.hpp"
 #include "core/version.hpp"
+#include "core/scoped_exit.hpp"
 
 #define ASIO_STANDALONE
 #include <asio.hpp>
@@ -38,13 +40,6 @@
 #include "core/dns_manager.hpp"
 #include "ui/webview_app.hpp"
 
-static std::atomic<bool> g_running{true};
-
-static void signal_handler(int sig) {
-    PC_LOG_INFO("Received signal {}, shutting down...", sig);
-    g_running = false;
-}
-
 // Drain all pending Win32 messages. Returns false if WM_QUIT was observed
 // (caller should then stop its wait loop).
 static bool pump_pending_messages() {
@@ -61,17 +56,15 @@ static bool pump_pending_messages() {
 }
 
 static bool is_elevated() {
-    BOOL elevated = FALSE;
-    HANDLE token = nullptr;
-    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
-        TOKEN_ELEVATION elevation;
-        DWORD size;
-        if (GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &size)) {
-            elevated = elevation.TokenIsElevated;
-        }
-        CloseHandle(token);
-    }
-    return elevated == TRUE;
+    HANDLE raw_token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw_token)) return false;
+    clew::unique_handle token(raw_token);
+
+    TOKEN_ELEVATION elevation;
+    DWORD size = 0;
+    if (!GetTokenInformation(token.get(), TokenElevation, &elevation, sizeof(elevation), &size))
+        return false;
+    return elevation.TokenIsElevated == TRUE;
 }
 
 struct cli_options {
@@ -91,10 +84,12 @@ static void print_usage() {
 
 static cli_options parse_args(int argc, char* argv[]) {
     cli_options opts;
-    for (int i = 1; i < argc; ++i) {
-        std::string arg = argv[i];
+    std::span args(argv, argc);
+    auto it = args.begin() + 1;  // skip program name
+    while (it != args.end()) {
+        std::string_view arg = *it++;
         if (arg == "--gui") opts.gui_mode = true;
-        else if (arg == "--static-dir" && i + 1 < argc) opts.static_dir = argv[++i];
+        else if (arg == "--static-dir" && it != args.end()) opts.static_dir = *it++;
         else if (arg == "--help" || arg == "-h") opts.help = true;
     }
     return opts;
@@ -110,7 +105,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int) {
     (void)lpCmdLine;
     cli_options opts = parse_args(argc, argv);
 
-    HANDLE mutex = CreateMutexW(nullptr, TRUE, CLEW_MUTEX_NAME);
+    clew::unique_handle mutex(CreateMutexW(nullptr, TRUE, CLEW_MUTEX_NAME));
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
         HWND existing = FindWindowW(CLEW_WINDOW_CLASS, nullptr);
         if (existing) {
@@ -118,8 +113,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int) {
             ShowWindow(existing, SW_RESTORE);
             SetForegroundWindow(existing);
         }
-        if (mutex) CloseHandle(mutex);
-        return 0;
+        return 0;  // mutex closed by unique_handle dtor
     }
 
 #ifndef NDEBUG
@@ -134,7 +128,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int) {
 int main(int argc, char* argv[]) {
     cli_options opts = parse_args(argc, argv);
     HINSTANCE hInstance = GetModuleHandle(nullptr);
-    HANDLE mutex = nullptr;
+    clew::unique_handle mutex;
 #endif
 
     if (opts.help) { print_usage(); return 0; }
@@ -200,6 +194,12 @@ int main(int argc, char* argv[]) {
     if (num_workers <= 0)
         num_workers = std::max(2u, std::thread::hardware_concurrency() / 2);
     PC_LOG_INFO("io_context with {} worker threads", num_workers);
+
+    // Startup-phase interrupt flag — only gates the init-wait loop below,
+    // set to true if the user closes the window before process tree init
+    // finishes. After gui->run() starts, the Win32 message loop drives
+    // shutdown on its own (WM_DESTROY → PostQuitMessage → gui->run() returns).
+    bool init_interrupted = false;
 
     // ============================================================
     // 3. Process Tree Manager (ETW + NtQuery + Flat Tree + Rules)
@@ -368,7 +368,9 @@ int main(int argc, char* argv[]) {
 #ifdef NDEBUG
             gui->set_devtools_enabled(false);
 #endif
-            gui->set_on_close([]() { g_running = false; });
+            // No on_close handler needed: the Win32 message loop exits on
+            // WM_DESTROY (PostQuitMessage), which returns from gui->run()
+            // naturally — same path for X-button close and tray Exit.
             gui->set_on_move_resize([&config](int x, int y, int w, int h) {
                 auto& ui = config.get_v2().ui;
                 ui.window_x = x; ui.window_y = y;
@@ -388,18 +390,17 @@ int main(int argc, char* argv[]) {
     // Wait for tree initialization before opening WinDivert
     // Pump Win32 messages during wait so WebView2 can load in parallel
     {
-        auto t0 = std::chrono::steady_clock::now();
-        while (!tree_mgr.is_initialized() && g_running) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        while (!tree_mgr.is_initialized() && !init_interrupted &&
+               std::chrono::steady_clock::now() < deadline) {
             if (gui_created && !pump_pending_messages()) {
-                g_running = false;
+                init_interrupted = true;
                 break;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
-            if (std::chrono::steady_clock::now() - t0 > std::chrono::seconds(30)) {
-                PC_LOG_ERROR("Tree initialization timeout");
-                break;
-            }
         }
+        if (!tree_mgr.is_initialized() && !init_interrupted)
+            PC_LOG_ERROR("Tree initialization timeout");
     }
 
     if (tree_mgr.is_initialized()) {
@@ -446,20 +447,22 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    signal(SIGINT, signal_handler);
-    signal(SIGTERM, signal_handler);
-
     PC_LOG_INFO("Clew is ready.");
 
     // ============================================================
-    // Main loop (GUI message pump or console wait)
+    // Main loop — Win32 message pump. Exits when the user closes the
+    // window (X button) or picks Exit from the tray menu; both paths
+    // end in WM_DESTROY → PostQuitMessage → gui->run() returns.
     // ============================================================
     if (gui_created) {
         gui->run();
     } else {
-        if (!opts.gui_mode)
-            PC_LOG_INFO("Console mode. Press Ctrl+C to exit.");
-        while (g_running) std::this_thread::sleep_for(std::chrono::seconds(1));
+        // GUI creation failed (WebView2 missing / init error). The CLI
+        // fallback is not a supported product mode; park the thread so
+        // background engines can finish any in-flight work, then rely
+        // on the user terminating via Task Manager.
+        PC_LOG_ERROR("GUI creation failed — this build requires WebView2.");
+        std::this_thread::sleep_for(std::chrono::hours(1));
     }
 
     // ============================================================
@@ -494,11 +497,10 @@ int main(int argc, char* argv[]) {
     // 5. Stop ETW + tree manager
     tree_mgr.stop();
 
-    // 6. Cleanup
+    // 6. Cleanup (mutex closed automatically by unique_handle dtor on scope exit)
     icons.shutdown();
     WSACleanup();
     quill::Backend::stop();
-    if (mutex) CloseHandle(mutex);
     PC_LOG_INFO("Goodbye!");
 
     return 0;

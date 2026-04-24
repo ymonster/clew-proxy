@@ -29,7 +29,7 @@ inline std::string ip_host_to_string(uint32_t ip) {
 namespace clew {
 
 using asio::ip::tcp;
-using namespace asio::experimental::awaitable_operators;
+using asio::experimental::awaitable_operators::operator||;
 
 // ProxyGroupConfig for relay (matches v3 architecture groups_ map value)
 struct ProxyGroupConfig {
@@ -51,7 +51,10 @@ pipe(tcp::socket& from, tcp::socket& to)
                 to, asio::buffer(buf, n), asio::use_awaitable);
         }
     } catch (...) {
-        // EOF or error: shutdown write side so the other pipe exits cleanly
+        // Any error (EOF, reset, timeout, bad_alloc) → shutdown the peer
+        // direction so the other pipe coroutine sees EOF and exits. The
+        // handling is identical for every exception type, so a catch-all
+        // is correct here by design (not defensive laziness).
         std::error_code ec;
         to.shutdown(tcp::socket::shutdown_send, ec);
     }
@@ -74,12 +77,10 @@ handle_connection(tcp::socket client_sock,
 {
     auto ex = co_await asio::this_coro::executor;
 
-    uint16_t src_port = 0;
-    try {
-        src_port = client_sock.remote_endpoint().port();
-    } catch (...) {
-        co_return;  // socket already closed
-    }
+    std::error_code ep_ec;
+    auto ep = client_sock.remote_endpoint(ep_ec);
+    if (ep_ec) co_return;  // socket already closed
+    const uint16_t src_port = ep.port();
 
     // Lookup tracker entry
     auto entry = tracker.take(src_port);
@@ -95,8 +96,8 @@ handle_connection(tcp::socket client_sock,
     };
 
     auto cfg_opt = co_await asio::co_spawn(strand,
-        [&]() -> asio::awaitable<std::optional<GroupInfo>> {
-            auto it = groups.find(entry->group_id);
+        [&groups, group_id = entry->group_id]() -> asio::awaitable<std::optional<GroupInfo>> {
+            auto it = groups.find(group_id);
             if (it == groups.end()) co_return std::nullopt;
             co_return GroupInfo{it->second.host, it->second.port};
         }, asio::use_awaitable);
@@ -146,6 +147,8 @@ handle_connection(tcp::socket client_sock,
                      src_port, dest_ip_str, dest_port, connect_ms, handshake_ms);
 
         // Bidirectional relay: || means any-completes-cancels-other
+        // (parens required — co_await has higher precedence than ||, without them
+        //  the expression parses as `(co_await pipe(a,b)) || pipe(b,a)`)
         co_await (pipe(client_sock, proxy_sock) || pipe(proxy_sock, client_sock));
 
     } catch (const std::exception& e) {

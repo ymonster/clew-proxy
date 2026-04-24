@@ -29,7 +29,7 @@
 #include <filesystem>
 #include <fstream>
 #include <chrono>
-#include <ctime>
+#include <format>
 #include <memory>
 
 #include "core/log.hpp"
@@ -143,12 +143,9 @@ inline bool save_state(const std::filesystem::path& file,
                        const std::vector<InterfaceDnsState>& states) {
     try {
         nlohmann::json j;
-        auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-        char buf[32];
-        std::tm tm_buf{};
-        gmtime_s(&tm_buf, &now);
-        std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm_buf);
-        j["saved_at"] = buf;
+        // ISO 8601 UTC timestamp via C++20 chrono formatter (truncate to seconds)
+        auto now = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+        j["saved_at"] = std::format("{:%Y-%m-%dT%H:%M:%SZ}", now);
 
         nlohmann::json arr = nlohmann::json::array();
         for (const auto& st : states) {

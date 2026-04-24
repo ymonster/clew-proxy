@@ -5,11 +5,7 @@ const STORAGE_KEY = 'clew-theme'
 const isDark = ref(true)
 
 function applyTheme(dark: boolean) {
-  if (dark) {
-    document.documentElement.classList.add('dark')
-  } else {
-    document.documentElement.classList.remove('dark')
-  }
+  document.documentElement.classList.toggle('dark', dark)
 }
 
 function initTheme() {

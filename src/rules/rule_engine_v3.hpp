@@ -167,7 +167,7 @@ public:
         tree.at(idx).group_id = group_id;
         tree.at(idx).set_flag(entry_flags::MANUAL_HIJACK);
 
-        tree.visit_descendants(idx, [&](uint32_t ci, const process_entry&) {
+        tree.visit_descendants(idx, [&tree, group_id](uint32_t ci, const process_entry&) {
             auto& c = tree.at(ci);
             c.group_id = group_id;
             c.set_flag(entry_flags::MANUAL_HIJACK);
@@ -185,7 +185,7 @@ public:
         entry.clear_flag(entry_flags::MANUAL_HIJACK);
         if (!entry.has_flag(entry_flags::AUTO_MATCHED)) entry.group_id = NO_PROXY;
 
-        tree.visit_descendants(idx, [&](uint32_t ci, const process_entry& child) {
+        tree.visit_descendants(idx, [&tree](uint32_t ci, const process_entry& child) {
             if (!child.has_flag(entry_flags::MANUAL_HIJACK)) return;
             auto& c = tree.at(ci);
             c.clear_flag(entry_flags::MANUAL_HIJACK);
@@ -492,7 +492,7 @@ private:
 
     // Expand all descendants of an entry via LC-RS traversal
     void expand_descendants(flat_tree& tree, uint32_t idx, AutoRule& rule) {
-        tree.visit_descendants(idx, [&](uint32_t child_idx, const process_entry& child) {
+        tree.visit_descendants(idx, [this, &tree, &rule](uint32_t child_idx, const process_entry& child) {
             if (rule.excluded_pids.contains(child.pid)) return;
             if (rule.matched_pids.contains(child.pid)) return;
             rule.matched_pids.insert(child.pid);
