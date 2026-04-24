@@ -79,7 +79,7 @@ Rules tab:
 
 ### 3. Process Tree and Network Activities
 
-- **Process Tree**: the left sidebar process tree. Hovering a process reveals a small lightning icon on the right; clicking it proxies the current PID (plus any future children). Useful for ad-hoc debugging.
+- **Process Tree**: the left sidebar process tree. Hovering a process reveals a small lightning icon on the right; clicking it proxies the current PID (plus any future children). Useful for ad-hoc debugging. **A manual hijack always proxies both TCP and UDP — the protocol is not selectable**; if you want one or the other, use the `Protocol` field on an Auto Rule.
 
   ![Process tree hover](docs/images/process_hover.png)
 
@@ -179,7 +179,9 @@ Technically cleaner (`FWPM_LAYER_ALE_CONNECT_REDIRECT_V4` rewrites the socket de
 # Configure
 cmake --preset windows-vcpkg
 
-# Backend
+# Backend (post-refactor the source tree has ~30 TUs, up from 2 in the legacy
+# header-only layout — first clean build takes noticeably longer than before;
+# CMakeLists already enables /MP, which gives a sizeable speedup on multi-core hosts)
 cmake --build build --config Release
 
 # Frontend

@@ -79,7 +79,7 @@ Rules 标签页
 
 ### 3. 进程树和 Network Activities
 
-- **Process Tree**：进程树。hover 某个进程，右侧会出现一个小闪电图标，点击即可代理当前这个 PID（含它未来派生的子进程）。适合临时调试。
+- **Process Tree**：进程树。hover 某个进程，右侧会出现一个小闪电图标，点击即可代理当前这个 PID（含它未来派生的子进程）。适合临时调试。**手动 hack 默认同时代理 TCP + UDP，不可选协议**；如果只想代理单一协议，请用 Auto Rule 的 `Protocol` 字段。
 
   ![Process tree hover](docs/images/process_hover.png)
 
@@ -177,7 +177,8 @@ python -c "import secrets; print(secrets.token_hex(24))"
 # 配置
 cmake --preset windows-vcpkg
 
-# 后端
+# 后端（refactor 之后 TU 数量从 2 个涨到 ~30 个，首次 clean build 会比 legacy 版本慢一些；
+# CMakeLists 已开启 /MP 并行编译，多核机器明显缓解）
 cmake --build build --config Release
 
 # 前端

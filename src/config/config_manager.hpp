@@ -164,11 +164,41 @@ public:
 
     bool save() {
         try {
+            // 1. Serialize first. If nlohmann::json throws (non-UTF8 value,
+            //    etc.) we bail out before touching the filesystem, so the
+            //    existing file is never truncated.
             nlohmann::json j = v2_config_;
-            std::ofstream file(config_path_);
             std::string content = j.dump(2);
-            file << content;
-            last_raw_ = content;
+
+            // 2. Write to a temp file then rename atomically. This avoids
+            //    leaving a half-written config on disk if the process
+            //    crashes mid-write.
+            auto tmp_path = config_path_;
+            tmp_path += ".tmp";
+            {
+                std::ofstream file(tmp_path, std::ios::binary | std::ios::trunc);
+                if (!file) {
+                    PC_LOG_ERROR("Failed to open {} for writing", tmp_path.string());
+                    return false;
+                }
+                file.write(content.data(), static_cast<std::streamsize>(content.size()));
+                file.flush();
+                if (!file) {
+                    PC_LOG_ERROR("Failed to write {}", tmp_path.string());
+                    return false;
+                }
+            }
+
+            std::error_code ec;
+            std::filesystem::rename(tmp_path, config_path_, ec);
+            if (ec) {
+                PC_LOG_ERROR("Failed to rename {} -> {}: {}",
+                             tmp_path.string(), config_path_.string(), ec.message());
+                std::filesystem::remove(tmp_path, ec);
+                return false;
+            }
+
+            last_raw_ = std::move(content);
             PC_LOG_INFO("Config saved to {}", config_path_.string());
             return true;
         } catch (const std::exception& e) {

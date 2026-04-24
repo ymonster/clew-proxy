@@ -1,5 +1,12 @@
 // Clew — Process-level Traffic Hijacker
-// main.cpp: v3 architecture — Asio + ETW + Flat Tree + WinDivert dual-layer
+// main.cpp: three-layer architecture wiring
+//   domain (strand_bound + process_tree_manager + config_store)
+//     ^
+//     |
+//   application services (9) + auth_middleware
+//     ^
+//     |
+//   transport (sse_hub + projection + bridge + http_api_server)
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -7,41 +14,71 @@
 
 #include <winsock2.h>
 #include <windows.h>
+
+#include <chrono>
+#include <format>
 #include <iostream>
-#include <vector>
+#include <memory>
+#include <span>
 #include <string>
 #include <string_view>
-#include <format>
-#include <span>
 #include <thread>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
 #include "core/log.hpp"
-#include "core/version.hpp"
 #include "core/scoped_exit.hpp"
+#include "core/version.hpp"
 
 #define ASIO_STANDALONE
 #include <asio.hpp>
 
-#include "config/types.hpp"
+// Config + domain
 #include "config/config_manager.hpp"
-#include "process/process_tree_manager.hpp"
-#include "core/port_tracker.hpp"
-#include "core/windivert_socket.hpp"
-#include "core/windivert_network.hpp"
-#include "proxy/acceptor.hpp"
-#include "proxy/relay.hpp"
-#include "udp/udp_port_tracker.hpp"
-#include "udp/windivert_socket_udp.hpp"
-#include "udp/windivert_network_udp.hpp"
-#include "udp/udp_session_table.hpp"
-#include "udp/socks5_udp_manager.hpp"
-#include "udp/udp_relay.hpp"
-#include "api/http_api_server.hpp"
+#include "config/config_store.hpp"
+#include "config/types.hpp"
+#include "domain/process_tree_manager.hpp"
+#include "domain/strand_bound.hpp"
+
+// Transport + projection + bridge + SSE
+#include "common/api_context.hpp"
+#include "projection/config_sse_bridge.hpp"
+#include "projection/process_projection.hpp"
+#include "transport/http_api_server.hpp"
+#include "transport/sse_hub.hpp"
+
+// Application services + middleware
+#include "auth/auth_middleware.hpp"
+#include "services/auth_service.hpp"
+#include "services/config_service.hpp"
+#include "services/connection_service.hpp"
+#include "services/group_service.hpp"
+#include "services/icon_service.hpp"
+#include "services/process_tree_service.hpp"
+#include "services/rule_service.hpp"
+#include "services/shell_service.hpp"
+#include "services/stats_service.hpp"
+
+// Hot-path components (reused verbatim)
+#include "api/icon_cache.hpp"
 #include "core/dns_forwarder.hpp"
 #include "core/dns_manager.hpp"
+#include "core/port_tracker.hpp"
+#include "core/windivert_network.hpp"
+#include "core/windivert_socket.hpp"
+#include "proxy/acceptor.hpp"
+#include "proxy/relay.hpp"
+#include "udp/socks5_udp_manager.hpp"
+#include "udp/udp_port_tracker.hpp"
+#include "udp/udp_relay.hpp"
+#include "udp/udp_session_table.hpp"
+#include "udp/windivert_network_udp.hpp"
+#include "udp/windivert_socket_udp.hpp"
 #include "ui/webview_app.hpp"
 
-// Drain all pending Win32 messages. Returns false if WM_QUIT was observed
-// (caller should then stop its wait loop).
+// ---------------------------------------------------------------------------
+
 static bool pump_pending_messages() {
     MSG msg;
     while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
@@ -85,7 +122,7 @@ static void print_usage() {
 static cli_options parse_args(int argc, char* argv[]) {
     cli_options opts;
     std::span args(argv, argc);
-    auto it = args.begin() + 1;  // skip program name
+    auto it = args.begin() + 1;
     while (it != args.end()) {
         std::string_view arg = *it++;
         if (arg == "--gui") opts.gui_mode = true;
@@ -113,7 +150,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int) {
             ShowWindow(existing, SW_RESTORE);
             SetForegroundWindow(existing);
         }
-        return 0;  // mutex closed by unique_handle dtor
+        return 0;
     }
 
 #ifndef NDEBUG
@@ -163,7 +200,7 @@ int main(int argc, char* argv[]) {
             "%Y-%m-%d %H:%M:%S.%Qus"});
 #endif
 
-    PC_LOG_INFO("=== Clew {} (v3 architecture) ===", CLEW_VERSION);
+    PC_LOG_INFO("=== Clew {} (three-layer refactor) ===", CLEW_VERSION);
 
     if (!is_elevated()) {
         PC_LOG_ERROR("Clew requires administrator privileges");
@@ -191,44 +228,45 @@ int main(int argc, char* argv[]) {
     auto strand = asio::make_strand(ioc);
 
     int num_workers = config.get_v2().io_threads;
-    if (num_workers <= 0)
+    if (num_workers <= 0) {
         num_workers = std::max(2u, std::thread::hardware_concurrency() / 2);
+    }
     PC_LOG_INFO("io_context with {} worker threads", num_workers);
 
-    // Startup-phase interrupt flag — only gates the init-wait loop below,
-    // set to true if the user closes the window before process tree init
-    // finishes. After gui->run() starts, the Win32 message loop drives
-    // shutdown on its own (WM_DESTROY → PostQuitMessage → gui->run() returns).
     bool init_interrupted = false;
 
     // ============================================================
-    // 3. Process Tree Manager (ETW + NtQuery + Flat Tree + Rules)
+    // 3. Domain layer: config_store + process_tree_manager + strand_bound
     // ============================================================
-    clew::process_tree_manager tree_mgr(ioc);
+    clew::config_store cfg_store(config);
+    clew::domain::process_tree_manager tree_mgr(ioc, strand);
+    clew::strand_bound_manager exec(tree_mgr, strand);
 
-    // Load auto rules
+    // Preload auto rules into rule_engine before ETW starts (safe — no
+    // concurrent access yet). The config_store observer registered below
+    // handles subsequent hot-reload.
     tree_mgr.rules().set_auto_rules(config.get_v2().auto_rules);
     PC_LOG_INFO("Loaded {} auto rules", config.get_v2().auto_rules.size());
 
     // ============================================================
-    // 4. PortTracker (65536 array, ~4MB heap)
+    // 4. Hot-path infrastructure (unchanged from legacy)
     // ============================================================
     auto port_tracker = std::make_unique<clew::PortTracker>();
 
-    // ============================================================
-    // 5. Proxy groups map (for relay coroutines)
-    // ============================================================
-    std::unordered_map<uint32_t, clew::ProxyGroupConfig> groups;
+    std::unordered_map<uint32_t, clew::ProxyGroupConfig> tcp_groups;
+    std::unordered_map<uint32_t, clew::UdpProxyGroupConfig> udp_groups;
+
     auto sync_groups = [&]() {
-        groups.clear();
+        tcp_groups.clear();
+        udp_groups.clear();
         for (const auto& g : config.get_v2().proxy_groups) {
-            groups[g.id] = {g.host, g.port};
+            tcp_groups[g.id] = {g.host, g.port};
+            udp_groups[g.id] = {g.host, g.port};
         }
-        PC_LOG_INFO("Proxy groups synced: {} groups", groups.size());
+        PC_LOG_INFO("Proxy groups synced: {} groups", tcp_groups.size());
     };
     sync_groups();
 
-    // Pick first proxy group as DNS upstream hop (SOCKS5 endpoint)
     auto pick_proxy_endpoint = [&]() -> std::pair<std::string, uint16_t> {
         const auto& v2 = config.get_v2();
         if (!v2.proxy_groups.empty()) {
@@ -236,123 +274,125 @@ int main(int argc, char* argv[]) {
         }
         return {v2.default_proxy.host, v2.default_proxy.port};
     };
+
     clew::DnsManager dns_mgr(ioc);
     dns_mgr.recover_crash_state();
 
-    // ============================================================
-    // 6. Acceptor (Asio TCP listener for redirected connections)
-    // ============================================================
-    clew::async_acceptor acceptor(ioc, *port_tracker, strand, groups);
+    clew::async_acceptor acceptor(ioc, *port_tracker, strand, tcp_groups);
     uint16_t redirect_port = acceptor.start();
     PC_LOG_INFO("Acceptor listening on port {}", redirect_port);
 
-    // ============================================================
-    // 7. WinDivert layers
-    // ============================================================
-    clew::windivert_socket wd_socket(ioc, strand, tree_mgr.tree(), *port_tracker);
+    clew::windivert_socket  wd_socket(ioc, strand, tree_mgr.tree(), *port_tracker);
     clew::windivert_network wd_network(*port_tracker, redirect_port);
 
-    // ============================================================
-    // 7b. UDP components (independent from TCP)
-    // ============================================================
     constexpr uint16_t UDP_RELAY_PORT = 19999;
 
     auto udp_port_tracker = std::make_unique<clew::UdpPortTracker>();
-
-    // UDP proxy groups (same hosts as TCP, separate map for UdpProxyGroupConfig)
-    std::unordered_map<uint32_t, clew::UdpProxyGroupConfig> udp_groups;
-    auto sync_udp_groups = [&]() {
-        udp_groups.clear();
-        for (const auto& g : config.get_v2().proxy_groups) {
-            udp_groups[g.id] = {g.host, g.port};
-        }
-    };
-    sync_udp_groups();
-
     clew::UdpSessionTable udp_session_table;
-
-    clew::windivert_socket_udp wd_socket_udp(
-        ioc, strand, tree_mgr.tree(), tree_mgr.rules(), *udp_port_tracker);
-
-    clew::windivert_network_udp wd_network_udp(
-        *udp_port_tracker, UDP_RELAY_PORT, udp_session_table);
-
+    clew::windivert_socket_udp  wd_socket_udp(ioc, strand, tree_mgr.tree(),
+                                               tree_mgr.rules(), *udp_port_tracker);
+    clew::windivert_network_udp wd_network_udp(*udp_port_tracker, UDP_RELAY_PORT,
+                                                udp_session_table);
     clew::Socks5UdpManager socks5_udp_mgr(ioc, udp_groups);
-
-    // UdpRelay created after wd_network_udp.open() so handle is valid
     std::unique_ptr<clew::UdpRelay> udp_relay;
 
+    clew::icon_cache icons;
+    icons.init();
+
     // ============================================================
-    // 8. HTTP API Server
+    // 5. Transport wiring: sse_hub -> process_projection + config_sse_bridge
+    // ============================================================
+    clew::sse_hub          sse;
+    clew::process_projection  projection(tree_mgr, sse);
+    clew::config_sse_bridge   cfg_bridge(cfg_store, sse);
+    tree_mgr.add_listener(&projection);
+
+    // ============================================================
+    // 6. Application services (9)
+    // ============================================================
+    clew::auth_service         auth_svc(cfg_store);
+    clew::config_service       config_svc(cfg_store);
+    clew::connection_service   connection_svc(exec, udp_port_tracker.get());
+    clew::group_service        group_svc(exec, cfg_store);
+    clew::icon_service         icon_svc(icons);
+    clew::process_tree_service process_svc(exec);
+    process_svc.set_snapshot_getter([&projection]() { return projection.tree_snapshot(); });
+    clew::rule_service         rule_svc(exec, cfg_store);
+    clew::shell_service        shell_svc;
+    clew::stats_service        stats_svc(exec);
+
+    clew::auth_middleware auth_mw(cfg_store);
+
+    clew::api_context ctx{
+        .auth        = auth_svc,
+        .config      = config_svc,
+        .connections = connection_svc,
+        .groups      = group_svc,
+        .icons       = icon_svc,
+        .processes   = process_svc,
+        .rules       = rule_svc,
+        .shell       = shell_svc,
+        .stats       = stats_svc,
+        .sse         = sse,
+    };
+
+    // ============================================================
+    // 7. Config observers (side-effect fanout)
+    //    - rule engine sync: re-apply auto rules on strand
+    //    - proxy groups sync: update acceptor + udp manager maps
+    //    - dns hot-reload
+    //    - log level
+    //
+    //    (config_sse_bridge already subscribes separately in its ctor.)
+    // ============================================================
+    cfg_store.subscribe(
+        [&exec, &sync_groups, &dns_mgr, &pick_proxy_endpoint]
+        (const clew::ConfigV2& cfg, clew::config_change /*tag*/) {
+            try {
+                exec.command([rules = cfg.auto_rules](clew::domain::process_tree_manager& m) {
+                    m.apply_auto_rules_from_config(rules);
+                });
+            } catch (const std::exception& e) {
+                PC_LOG_WARN("[config-sync] rule reload failed: {}", e.what());
+            }
+
+            sync_groups();
+            clew::set_log_level(cfg.log_level);
+
+            auto [ph, pp] = pick_proxy_endpoint();
+            dns_mgr.apply(cfg.dns, ph, pp);
+        });
+
+    // ============================================================
+    // 8. HTTP API server (transport layer)
     // ============================================================
     constexpr int API_PORT = 18080;
-    clew::http_api_server api_server(API_PORT, tree_mgr, config, strand, opts.static_dir);
-    api_server.set_port_tracker(port_tracker.get());
-    api_server.set_udp_port_tracker(udp_port_tracker.get());
-
-    // Icon cache (GDI+ based, provides /api/icon endpoint)
-    clew::icon_cache icons;
-    if (icons.init()) {
-        api_server.set_icon_cache(&icons);
-    }
-
-
-    // Wire tree change → API snapshot update + SSE push
-    tree_mgr.set_on_tree_changed([&api_server]() {
-        api_server.on_tree_changed();
-    });
-
-    // Config change callback (from Monaco editor save)
-    api_server.set_on_config_change(
-        [&strand, &tree_mgr, &sync_groups, &sync_udp_groups, &pick_proxy_endpoint, &dns_mgr]
-        (const clew::ConfigV2& cfg) {
-        // Reload auto rules on strand
-        asio::post(strand, [&tree_mgr, rules = cfg.auto_rules]() {
-            tree_mgr.rules().set_auto_rules(rules);
-            tree_mgr.rules().apply_auto_rules(tree_mgr.tree());
-        });
-        sync_groups();
-        sync_udp_groups();
-        clew::set_log_level(cfg.log_level);
-
-        // DNS hot-reload
-        auto [ph, pp] = pick_proxy_endpoint();
-        dns_mgr.apply(cfg.dns, ph, pp);
-
-#ifdef CLEW_HAS_WEBVIEW2
-        // Will be wired to webview_app below if GUI mode
-#endif
-    });
+    clew::transport::http_api_server api_server(API_PORT, ctx, auth_mw, opts.static_dir);
 
     // ============================================================
     // Start services
     // ============================================================
-
-    // Start API server
     if (!api_server.start()) {
-        PC_LOG_ERROR("Failed to start API server");
+        PC_LOG_ERROR("Failed to start HTTP API server");
         WSACleanup();
         return 1;
     }
     PC_LOG_INFO("HTTP API: http://127.0.0.1:{}/", API_PORT);
 
-    // Apply DNS config (forwarder start + system DNS configuration)
     {
         auto [ph, pp] = pick_proxy_endpoint();
         dns_mgr.apply(config.get_v2().dns, ph, pp);
     }
 
-    // Start tree manager (ETW → NtQuery → build tree → ready)
     tree_mgr.start();
 
-    // Start io_context workers (processes tree_mgr initialization + acceptor + SOCKET events)
     std::vector<std::jthread> workers;
-    for (int i = 0; i < num_workers; i++) {
+    for (int i = 0; i < num_workers; ++i) {
         workers.emplace_back([&ioc]() { ioc.run(); });
     }
 
     // ============================================================
-    // GUI: Create window early so WebView2 init runs in parallel
+    // GUI (WebView2)
     // ============================================================
     std::unique_ptr<clew::webview_app> gui;
     bool gui_created = false;
@@ -363,14 +403,12 @@ int main(int argc, char* argv[]) {
             std::wstring url = std::format(L"http://127.0.0.1:{}/", API_PORT);
             gui = std::make_unique<clew::webview_app>(url, ui_cfg.window_width, ui_cfg.window_height);
             gui->set_title(L"Clew");
-            gui->set_initial_rect(ui_cfg.window_x, ui_cfg.window_y, ui_cfg.window_width, ui_cfg.window_height);
+            gui->set_initial_rect(ui_cfg.window_x, ui_cfg.window_y,
+                                   ui_cfg.window_width, ui_cfg.window_height);
             gui->set_close_to_tray(ui_cfg.close_to_tray);
 #ifdef NDEBUG
             gui->set_devtools_enabled(false);
 #endif
-            // No on_close handler needed: the Win32 message loop exits on
-            // WM_DESTROY (PostQuitMessage), which returns from gui->run()
-            // naturally — same path for X-button close and tray Exit.
             gui->set_on_move_resize([&config](int x, int y, int w, int h) {
                 auto& ui = config.get_v2().ui;
                 ui.window_x = x; ui.window_y = y;
@@ -388,7 +426,6 @@ int main(int argc, char* argv[]) {
     }
 
     // Wait for tree initialization before opening WinDivert
-    // Pump Win32 messages during wait so WebView2 can load in parallel
     {
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
         while (!tree_mgr.is_initialized() && !init_interrupted &&
@@ -399,18 +436,21 @@ int main(int argc, char* argv[]) {
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
-        if (!tree_mgr.is_initialized() && !init_interrupted)
+        if (!tree_mgr.is_initialized() && !init_interrupted) {
             PC_LOG_ERROR("Tree initialization timeout");
+        }
     }
 
     if (tree_mgr.is_initialized()) {
-        // Apply auto rules to initial tree
+        // Initial auto-rule scan + notify. apply_auto_rules_from_config
+        // re-applies the same list already loaded above, but routes through
+        // manager.notify_tree_changed() so projection refreshes its snapshot.
         asio::post(strand, [&tree_mgr]() {
-            tree_mgr.rules().apply_auto_rules(tree_mgr.tree());
+            auto rules_copy = tree_mgr.rules().auto_rules();
+            tree_mgr.apply_auto_rules_from_config(rules_copy);
             PC_LOG_INFO("Initial auto-rule scan complete");
         });
 
-        // Open WinDivert layers
         if (wd_socket.open()) {
             wd_socket.start();
             PC_LOG_INFO("WinDivert SOCKET layer started");
@@ -425,7 +465,6 @@ int main(int argc, char* argv[]) {
             PC_LOG_ERROR("WinDivert NETWORK layer failed — traffic interception disabled");
         }
 
-        // UDP layers
         if (wd_socket_udp.open()) {
             wd_socket_udp.start();
             PC_LOG_INFO("WinDivert UDP SOCKET layer started");
@@ -435,7 +474,6 @@ int main(int argc, char* argv[]) {
             wd_network_udp.start(2);
             PC_LOG_INFO("WinDivert UDP NETWORK layer started");
 
-            // Create relay now that handle is valid
             udp_relay = std::make_unique<clew::UdpRelay>(
                 ioc, udp_session_table, socks5_udp_mgr,
                 wd_network_udp.handle(), UDP_RELAY_PORT);
@@ -450,54 +488,42 @@ int main(int argc, char* argv[]) {
     PC_LOG_INFO("Clew is ready.");
 
     // ============================================================
-    // Main loop — Win32 message pump. Exits when the user closes the
-    // window (X button) or picks Exit from the tray menu; both paths
-    // end in WM_DESTROY → PostQuitMessage → gui->run() returns.
+    // Main loop (WM message pump or idle park)
     // ============================================================
     if (gui_created) {
         gui->run();
     } else {
-        // GUI creation failed (WebView2 missing / init error). The CLI
-        // fallback is not a supported product mode; park the thread so
-        // background engines can finish any in-flight work, then rely
-        // on the user terminating via Task Manager.
         PC_LOG_ERROR("GUI creation failed — this build requires WebView2.");
         std::this_thread::sleep_for(std::chrono::hours(1));
     }
 
     // ============================================================
-    // Graceful shutdown
+    // Graceful shutdown (reverse order)
     // ============================================================
     PC_LOG_INFO("Shutting down...");
 
-    // 1a. Stop UDP components first (reverse startup order)
-    dns_mgr.stop();  // stops forwarder + restores system DNS
+    dns_mgr.stop();
     socks5_udp_mgr.stop();
     if (udp_relay) udp_relay->stop();
     wd_network_udp.close();
     wd_socket_udp.close();
     PC_LOG_INFO("UDP layers closed");
 
-    // 1b. Stop TCP WinDivert (no new intercepts)
     wd_socket.close();
     wd_network.close();
     PC_LOG_INFO("WinDivert layers closed");
 
-    // 2. Stop acceptor (no new relay coroutines)
     acceptor.stop();
 
-    // 3. Stop API server first (breaks SSE connections, stops httplib)
     api_server.stop();
 
-    // 4. Stop io_context (relay coroutines will be cancelled)
     ioc.stop();
     for (auto& w : workers) w.join();
     PC_LOG_INFO("io_context stopped, {} workers joined", num_workers);
 
-    // 5. Stop ETW + tree manager
     tree_mgr.stop();
+    sse.stop();
 
-    // 6. Cleanup (mutex closed automatically by unique_handle dtor on scope exit)
     icons.shutdown();
     WSACleanup();
     quill::Backend::stop();

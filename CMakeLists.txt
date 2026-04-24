@@ -80,12 +80,42 @@ link_directories(
     ${CMAKE_SOURCE_DIR}/WinDivert-2.2.2-A/x64
 )
 
-# Source files. Most of the codebase is header-only, but http_api_server
-# is hpp/cpp-split to keep main.cpp's translation unit from pulling in
-# the full httplib.h + route-handler implementation on every rebuild.
+# Source files. Historically header-only, but the three-layer refactor
+# (see refactor_docs/DESIGN.md) progressively introduces hpp/cpp-split
+# translation units. The legacy http_api_server.cpp remains until Stage 4
+# retires it in favour of src/transport/*.
 set(CLEW_SOURCES
     src/main.cpp
-    src/api/http_api_server.cpp
+    src/common/api_exception.cpp
+    src/config/config_store.cpp
+    src/domain/process_tree_manager.cpp
+    src/auth/auth_middleware.cpp
+    src/services/auth_service.cpp
+    src/services/config_service.cpp
+    src/services/connection_service.cpp
+    src/services/group_service.cpp
+    src/services/icon_service.cpp
+    src/services/process_tree_service.cpp
+    src/services/rule_service.cpp
+    src/services/shell_service.cpp
+    src/services/stats_service.cpp
+    src/projection/process_projection.cpp
+    src/projection/config_sse_bridge.cpp
+    src/transport/sse_hub.cpp
+    src/transport/response_utils.cpp
+    src/transport/middleware.cpp
+    src/transport/route_registry.cpp
+    src/transport/http_api_server.cpp
+    src/transport/handlers/auth_handlers.cpp
+    src/transport/handlers/config_handlers.cpp
+    src/transport/handlers/connection_handlers.cpp
+    src/transport/handlers/group_handlers.cpp
+    src/transport/handlers/icon_handlers.cpp
+    src/transport/handlers/process_handlers.cpp
+    src/transport/handlers/rule_handlers.cpp
+    src/transport/handlers/shell_handlers.cpp
+    src/transport/handlers/sse_handlers.cpp
+    src/transport/handlers/stats_handlers.cpp
 )
 
 # Embed the Clew icon via a Win32 resource file.
@@ -106,6 +136,12 @@ endif()
 if(MSVC)
     target_link_options(clew PRIVATE
         "/MANIFESTUAC:level='requireAdministrator' uiAccess='false'")
+
+    # Parallel compilation: the Visual Studio generator parallelizes across
+    # projects by default but serializes .cpp files inside a single project.
+    # /MP tells cl.exe to span all cores for this target's TUs (~30 after
+    # the three-layer refactor). No-op on Ninja / MSBuild batch mode.
+    target_compile_options(clew PRIVATE /MP)
 endif()
 
 # Base libraries
