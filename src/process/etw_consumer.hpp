@@ -63,7 +63,7 @@ public:
         // (fixed header + trailing LoggerName buffer); use a byte vector as
         // RAII-managed backing storage. value-initialized to zero (≡ calloc).
         const size_t props_size = sizeof(EVENT_TRACE_PROPERTIES) +
-                                  (wcslen(SESSION_NAME) + 1) * sizeof(wchar_t);
+                                  sizeof(SESSION_NAME);
         std::vector<std::byte> props_buf(props_size);
         auto* props = reinterpret_cast<EVENT_TRACE_PROPERTIES*>(props_buf.data());
 
@@ -241,7 +241,7 @@ private:
     void cleanup_session() noexcept {
         try {
             const size_t buf_size = sizeof(EVENT_TRACE_PROPERTIES) +
-                                    (wcslen(SESSION_NAME) + 1) * sizeof(wchar_t);
+                                    sizeof(SESSION_NAME);
             std::vector<std::byte> props_buf(buf_size);
             auto* props = reinterpret_cast<EVENT_TRACE_PROPERTIES*>(props_buf.data());
             props->Wnode.BufferSize = static_cast<ULONG>(buf_size);
@@ -258,7 +258,7 @@ private:
                        EVENT_CONTROL_CODE_DISABLE_PROVIDER, 0, 0, 0, 0, nullptr);
         try {
             const size_t buf_size = sizeof(EVENT_TRACE_PROPERTIES) +
-                                    (wcslen(SESSION_NAME) + 1) * sizeof(wchar_t);
+                                    sizeof(SESSION_NAME);
             std::vector<std::byte> props_buf(buf_size);
             auto* props = reinterpret_cast<EVENT_TRACE_PROPERTIES*>(props_buf.data());
             props->Wnode.BufferSize = static_cast<ULONG>(buf_size);

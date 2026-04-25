@@ -372,9 +372,16 @@ def _wait_pid_in_tree(pid, timeout=3.0):
 @test("Batch hijack emits exactly one SSE process_update (H5)")
 def test_batch_hijack_single_notify():
     """DESIGN H5: manager.batch_hijack applies every add/remove then fires
-    notify_tree_changed exactly once, not N times."""
+    notify_tree_changed exactly once. Two-pronged check:
+      - CORRECTNESS via /api/hijack state diff (insensitive to stray events)
+      - EFFICIENCY via process_update event count (catches per-pid fanout
+        regression — legacy emitted ~N events for N pids)."""
+    # Pre-settle: prior tests spawn curl.exe processes whose ProcessStop
+    # ETW events can land in our collection window and look like strays.
+    time.sleep(1.0)
+
     with _sse_subscription(f"{BASE}/events") as q:
-        _drain(q)  # drop any periodic-refresh noise from the settle window
+        _drain(q)
 
         tree = requests.get(f"{BASE}/processes").json()
         test_pids = [p for p in _iter_pids(tree) if p not in RESERVED_PIDS][:5]
@@ -385,22 +392,29 @@ def test_batch_hijack_single_notify():
         })
         assert r.status_code == 200, f"batch hijack failed: {r.status_code} {r.text}"
 
-        # Short collection window: long enough for the single batch frame,
-        # short enough that background ETW ProcessStart/Stop rarely slip in.
         time.sleep(0.4)
         process_updates = _count(q, "process_update")
 
-        # Cleanup inside the subscription so the reader is still alive if we
-        # ever want to assert on the unhijack frame too.
+        # Truth source: the /api/hijack state. After the batch all test_pids
+        # should be present, regardless of how many SSE frames arrived.
+        hijacked_after = {p["pid"] for p in (requests.get(f"{BASE}/hijack").json() or [])}
+
+        # Cleanup inside the subscription so the reader stays alive.
         requests.post(f"{BASE}/hijack/batch", json={
             "pids": test_pids, "action": "unhijack", "group_id": 0,
         })
         time.sleep(0.2)
 
-    # Ideal value is 1. Allow 2 to tolerate one stray ETW event on busy machines.
-    # Legacy (pre-H5) emitted one process_update per pid (~N).
-    assert process_updates <= 2, (
-        f"expected <=2 process_update events after batch (ideal 1), "
+    expected = set(test_pids)
+    assert expected.issubset(hijacked_after), (
+        f"batch did not hijack all expected pids: "
+        f"missing {sorted(expected - hijacked_after)}"
+    )
+
+    # ≤ 3 tolerates stray ProcessStop events on busy machines while still
+    # catching a regression to per-pid fanout (~5).
+    assert process_updates <= 3, (
+        f"expected <=3 process_update events after batch (ideal 1), "
         f"got {process_updates} (legacy behavior emitted ~{len(test_pids)})"
     )
 
@@ -630,6 +644,104 @@ def test_cleanup_rule():
 
 
 # ============================================================
+# 7. DNS proxy round-trip (kept last — mutates system DNS)
+# ============================================================
+
+def _get_system_dns_servers():
+    """Read DNS servers from active IPv4 interfaces. Returns a set."""
+    cmd = ("Get-DnsClientServerAddress -AddressFamily IPv4 "
+           "| Where-Object { $_.ServerAddresses } "
+           "| ForEach-Object { $_.ServerAddresses } "
+           "| Sort-Object -Unique")
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-Command", cmd],
+        capture_output=True, text=True, timeout=10,
+    )
+    if result.returncode != 0:
+        return set()
+    return {line.strip() for line in result.stdout.splitlines() if line.strip()}
+
+
+def _query_dns(server_ip, hostname='example.com', timeout=5.0):
+    """Raw UDP DNS A-query. Return True on response, False on timeout."""
+    import socket as sk
+    import struct
+
+    txid   = 0x1234
+    flags  = 0x0100  # standard query, recursion desired
+    header = struct.pack('!HHHHHH', txid, flags, 1, 0, 0, 0)
+    qname  = b''.join(bytes([len(p)]) + p.encode() for p in hostname.split('.')) + b'\x00'
+    query  = header + qname + struct.pack('!HH', 1, 1)  # A, IN
+
+    s = sk.socket(sk.AF_INET, sk.SOCK_DGRAM)
+    s.settimeout(timeout)
+    try:
+        s.sendto(query, (server_ip, 53))
+        data, _ = s.recvfrom(512)
+        return len(data) >= 12 and data[:2] == struct.pack('!H', txid)
+    except (sk.timeout, OSError):
+        return False
+    finally:
+        s.close()
+
+
+@test("DNS proxy enable/disable round-trip with system DNS swap")
+def test_dns_proxy_roundtrip():
+    """Toggle dns.enabled via PUT /api/config and verify the full chain:
+      - system DNS gets swapped to 127.0.0.2 on enable
+      - forwarder on 127.0.0.2:53 actually answers a real query
+        (validates SOCKS5 UDP ASSOCIATE path is alive)
+      - system DNS gets restored on disable
+    Cleans up unconditionally even on assertion failure."""
+    raw          = requests.get(f"{BASE}/config").json()
+    original_dns = dict(raw.get("dns") or {})
+
+    initial_servers = _get_system_dns_servers()
+    print(f"    system DNS before: {sorted(initial_servers) or '(empty)'}")
+
+    try:
+        # --- Enable ---
+        enable_cfg = dict(raw, dns=dict(original_dns, enabled=True))
+        r = requests.put(f"{BASE}/config", json=enable_cfg)
+        assert r.status_code == 200, f"PUT enable failed: {r.status_code} {r.text}"
+
+        time.sleep(1.0)  # let dns_mgr.apply swap system DNS + start forwarder
+
+        servers_after_enable = _get_system_dns_servers()
+        assert "127.0.0.2" in servers_after_enable, (
+            f"127.0.0.2 not in system DNS after enable: "
+            f"{sorted(servers_after_enable)} (was {sorted(initial_servers)})"
+        )
+
+        ok = _query_dns("127.0.0.2", "example.com", timeout=5.0)
+        assert ok, "DNS forwarder did not respond on 127.0.0.2:53 within 5s"
+
+        # --- Disable ---
+        disable_cfg = dict(raw, dns=dict(original_dns, enabled=False))
+        r = requests.put(f"{BASE}/config", json=disable_cfg)
+        assert r.status_code == 200, f"PUT disable failed: {r.status_code} {r.text}"
+
+        time.sleep(1.0)  # let dns_mgr.apply restore system DNS
+
+        servers_after_disable = _get_system_dns_servers()
+        assert "127.0.0.2" not in servers_after_disable, (
+            f"127.0.0.2 still in system DNS after disable: "
+            f"{sorted(servers_after_disable)}"
+        )
+        if servers_after_disable != initial_servers:
+            print(f"    note: system DNS differs from initial "
+                  f"(initial={sorted(initial_servers)}, "
+                  f"now={sorted(servers_after_disable)})")
+    finally:
+        # Belt-and-suspenders: restore original config even on failure
+        try:
+            requests.put(f"{BASE}/config", json=raw, timeout=5)
+            time.sleep(0.5)
+        except Exception:
+            pass
+
+
+# ============================================================
 # Runner
 # ============================================================
 
@@ -640,7 +752,7 @@ if __name__ == "__main__":
 
     # Check connectivity first
     try:
-        requests.get(f"{BASE}/bootstrap", timeout=2)
+        requests.get(f"{BASE}/stats", timeout=2)
     except Exception as e:
         print(f"\nERROR: Cannot reach Clew API at {BASE}")
         print(f"  {e}")
@@ -674,6 +786,8 @@ if __name__ == "__main__":
         test_group_test_endpoint,
         # Final cleanup
         test_cleanup_rule,
+        # DNS round-trip last — mutates system DNS, has its own cleanup
+        test_dns_proxy_roundtrip,
     ]
 
     for t in tests:

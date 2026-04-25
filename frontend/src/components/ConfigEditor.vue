@@ -45,7 +45,7 @@ const editorOpen = ref(false)
 // DNS settings
 const dnsEnabled = ref(false)
 const dnsMode = ref('forwarder')
-const dnsUpstream = ref('8.8.8.8')
+const dnsUpstream = ref('')
 const dnsSaveMessage = ref<string | null>(null)
 
 // a11y: unique ids for label/field association
@@ -68,7 +68,7 @@ async function fetchConfig(options: { pushToEditor?: boolean } = {}) {
     if (dns) {
       dnsEnabled.value = !!dns.enabled
       dnsMode.value = (dns.mode as string) || 'forwarder'
-      dnsUpstream.value = (dns.upstream_host as string) || '8.8.8.8'
+      dnsUpstream.value = (dns.upstream_host as string) || ''
     }
     // Only overwrite the Monaco editor when explicitly requested (initial open),
     // OR when there are no unsaved local edits. Otherwise preserve user's work.
@@ -277,7 +277,7 @@ onUnmounted(() => {
                   v-model="dnsUpstream"
                   @change="saveDns"
                   type="text"
-                  placeholder="8.8.8.8"
+                  placeholder="DNS server"
                   class="h-8 px-2 text-sm font-mono border border-slate-200 dark:border-slate-700 rounded bg-slate-50 dark:bg-[#101922] text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-blue-500 w-40"
                 />
                 <span class="text-xs text-slate-500 dark:text-slate-400 font-mono">:53</span>

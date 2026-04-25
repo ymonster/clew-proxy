@@ -11,6 +11,7 @@
 #include <windows.h>
 
 #include "common/api_exception.hpp"
+#include "common/process_tree_json.hpp"
 #include "core/scoped_exit.hpp"
 #include "domain/process_tree_manager.hpp"
 #include "process/flat_tree.hpp"  // also declares query_process_cmdline
@@ -19,14 +20,6 @@
 namespace clew {
 
 namespace {
-
-std::string hijack_source_from_match(const std::optional<RuleMatchResult>& match) {
-    if (!match) return {};
-    if (match->rule_type == "manual")         return "manual";
-    if (match->rule_type == "auto")           return "auto:" + match->rule_id;
-    if (match->rule_type == "tree-inherited") return "tree:" + match->rule_id;
-    return match->rule_type;
-}
 
 std::pair<std::string, std::string> query_process_detail_impl(DWORD pid) {
     auto cmdline = query_process_cmdline(pid);
@@ -48,43 +41,6 @@ std::pair<std::string, std::string> query_process_detail_impl(DWORD pid) {
     return {std::move(image_path), std::move(cmdline)};
 }
 
-nlohmann::json entry_to_api_json(const flat_tree& tree, const rule_engine_v3& rules,
-                                  uint32_t idx, bool recursive) {
-    const auto& e = tree.at(idx);
-    auto match = rules.get_match_info(tree, e.pid);
-
-    nlohmann::json j;
-    j["pid"]            = e.pid;
-    j["parent_pid"]     = e.parent_pid;
-    j["name"]           = std::string(e.name_u8);
-    j["hijacked"]       = e.is_proxied();
-    j["hijack_source"]  = hijack_source_from_match(match);
-
-    if (recursive) {
-        nlohmann::json children = nlohmann::json::array();
-        uint32_t child = e.first_child_index;
-        while (child != INVALID_IDX) {
-            if (tree.at(child).alive) {
-                children.push_back(entry_to_api_json(tree, rules, child, true));
-            }
-            child = tree.at(child).next_sibling_index;
-        }
-        if (!children.empty()) {
-            j["children"] = std::move(children);
-        }
-    }
-    return j;
-}
-
-std::string build_tree_snapshot_string(const flat_tree& tree, const rule_engine_v3& rules) {
-    nlohmann::json arr = nlohmann::json::array();
-    auto roots = tree.get_roots();
-    for (uint32_t idx : roots) {
-        arr.push_back(entry_to_api_json(tree, rules, idx, true));
-    }
-    return arr.dump();
-}
-
 } // namespace
 
 process_tree_service::process_tree_service(strand_bound_manager& exec)
@@ -102,7 +58,7 @@ std::shared_ptr<const std::string> process_tree_service::tree_snapshot() const {
     // Fallback: materialize via strand. Used when projection is not yet
     // wired (early startup) or in the Stage 2 skeleton.
     auto snap = exec_.query([](const domain::process_tree_manager& m) -> std::string {
-        return build_tree_snapshot_string(m.tree(), m.rules());
+        return process_tree_to_json_string(m.tree(), m.rules());
     });
     return std::make_shared<const std::string>(std::move(snap));
 }
@@ -112,7 +68,7 @@ nlohmann::json process_tree_service::find_process(std::uint32_t pid) const {
         const auto& tree = m.tree();
         uint32_t idx = tree.find_by_pid(static_cast<DWORD>(pid));
         if (idx == INVALID_IDX) return {};
-        return entry_to_api_json(tree, m.rules(), idx, true);
+        return process_entry_to_json(tree, m.rules(), idx, true);
     });
     if (result.is_null() || result.empty()) {
         throw api_exception{api_error::not_found, "Process not found"};
@@ -125,7 +81,7 @@ nlohmann::json process_tree_service::find_process_detail(std::uint32_t pid) cons
         const auto& tree = m.tree();
         uint32_t idx = tree.find_by_pid(static_cast<DWORD>(pid));
         if (idx == INVALID_IDX) return {};
-        return entry_to_api_json(tree, m.rules(), idx, true);
+        return process_entry_to_json(tree, m.rules(), idx, true);
     });
     if (result.is_null() || result.empty()) {
         throw api_exception{api_error::not_found, "Process not found"};
