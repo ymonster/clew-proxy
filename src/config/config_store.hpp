@@ -74,7 +74,7 @@ template <typename Fn>
 void config_store::mutate(Fn&& fn, config_change tag) {
     ConfigV2 after;
     {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::scoped_lock lock(mutex_);
         std::forward<Fn>(fn)(mgr_.get_v2());
         if (!mgr_.save()) {
             throw api_exception{api_error::io_error, "config save failed"};
@@ -84,7 +84,7 @@ void config_store::mutate(Fn&& fn, config_change tag) {
     // Observers are called outside the lock so they may re-acquire
     // config_store via get() / raw_json() without deadlocking. Reentrant
     // mutate() still deadlocks and is considered a programming error.
-    for (auto& ob : observers_) {
+    for (const auto& ob : observers_) {
         ob(after, tag);
     }
 }

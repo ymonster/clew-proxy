@@ -69,7 +69,7 @@ public:
         auto now = std::chrono::steady_clock::now();
         std::unique_lock lk(mu_);
         // DNS (port 53) gets shorter timeout
-        return std::erase_if(sessions_, [&](const auto& kv) {
+        return std::erase_if(sessions_, [now, timeout](const auto& kv) {
             auto age = std::chrono::duration_cast<std::chrono::seconds>(now - kv.second.last_active);
             auto effective_timeout = (kv.second.orig_dst_port == htons(53))
                                     ? std::chrono::seconds(10)

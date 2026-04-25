@@ -3,12 +3,9 @@
 // api_context — dependency-injection aggregate passed to the transport
 // layer. Each HTTP handler dispatches into ctx.<service>.method(...).
 // Populated in main.cpp after all service + bridge objects are constructed.
-//
-// Stage 2 shape: 9 services. Stage 3 will add sse_hub& sse.
 
 namespace clew {
 
-class auth_service;
 class config_service;
 class connection_service;
 class group_service;
@@ -20,7 +17,6 @@ class stats_service;
 class sse_hub;
 
 struct api_context {
-    auth_service&         auth;
     config_service&       config;
     connection_service&   connections;
     group_service&        groups;

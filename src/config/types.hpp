@@ -266,13 +266,6 @@ struct DnsConfig {
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(DnsConfig, enabled, mode, upstream_host, upstream_port, listen_host, listen_port)
 
-struct ApiAuth {
-    bool enabled = false;       // Off by default
-    std::string token = "";     // Bearer token; must be non-empty when enabled
-};
-
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ApiAuth, enabled, token)
-
 struct ConfigV2 {
     int version = 2;
     ProxyTarget default_proxy;
@@ -290,9 +283,8 @@ struct ConfigV2 {
     int io_threads = 0;                         // NEW: 0 = hardware_concurrency()/2
     std::string log_level = "info";             // Runtime log level: debug/info/warning/error
     DnsConfig dns;                              // NEW: DNS proxy configuration
-    ApiAuth auth;                               // NEW: API token authentication (default off)
 };
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ConfigV2, version, default_proxy, proxy_groups, next_group_id, default_exclude_cidrs, auto_rules, ui, io_threads, log_level, dns, auth)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ConfigV2, version, default_proxy, proxy_groups, next_group_id, default_exclude_cidrs, auto_rules, ui, io_threads, log_level, dns)
 
 } // namespace clew

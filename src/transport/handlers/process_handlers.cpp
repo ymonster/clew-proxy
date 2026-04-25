@@ -18,7 +18,7 @@ namespace clew {
 
 namespace {
 
-void handle_list_processes(const httplib::Request&, httplib::Response& res, api_context& ctx) {
+void handle_list_processes(const httplib::Request&, httplib::Response& res, const api_context& ctx) {
     auto snap = ctx.processes.tree_snapshot();
     if (!snap) {
         write_json_text(res, "[]");
@@ -27,21 +27,21 @@ void handle_list_processes(const httplib::Request&, httplib::Response& res, api_
     write_json_text(res, *snap);
 }
 
-void handle_process_by_pid(const httplib::Request& req, httplib::Response& res, api_context& ctx) {
+void handle_process_by_pid(const httplib::Request& req, httplib::Response& res, const api_context& ctx) {
     auto pid = parse_match_u32(req, 1, "pid");
     write_json(res, ctx.processes.find_process(pid));
 }
 
-void handle_process_detail(const httplib::Request& req, httplib::Response& res, api_context& ctx) {
+void handle_process_detail(const httplib::Request& req, httplib::Response& res, const api_context& ctx) {
     auto pid = parse_match_u32(req, 1, "pid");
     write_json(res, ctx.processes.find_process_detail(pid));
 }
 
-void handle_list_hijacked(const httplib::Request&, httplib::Response& res, api_context& ctx) {
+void handle_list_hijacked(const httplib::Request&, httplib::Response& res, const api_context& ctx) {
     write_json(res, ctx.processes.list_hijacked());
 }
 
-void handle_hijack(const httplib::Request& req, httplib::Response& res, api_context& ctx) {
+void handle_hijack(const httplib::Request& req, httplib::Response& res, const api_context& ctx) {
     auto pid = parse_match_u32(req, 1, "pid");
     bool tree_mode = true;
     std::uint32_t gid = 0;
@@ -56,14 +56,14 @@ void handle_hijack(const httplib::Request& req, httplib::Response& res, api_cont
     write_json(res, nlohmann::json{{"success", true}});
 }
 
-void handle_unhijack(const httplib::Request& req, httplib::Response& res, api_context& ctx) {
+void handle_unhijack(const httplib::Request& req, httplib::Response& res, const api_context& ctx) {
     auto pid = parse_match_u32(req, 1, "pid");
     bool tree_mode = req.has_param("tree") && req.get_param_value("tree") == "true";
     ctx.processes.unhijack(pid, tree_mode);
     write_json(res, nlohmann::json{{"success", true}});
 }
 
-void handle_batch_hijack(const httplib::Request& req, httplib::Response& res, api_context& ctx) {
+void handle_batch_hijack(const httplib::Request& req, httplib::Response& res, const api_context& ctx) {
     auto body = parse_json_body(req);
     auto pids = body["pids"].get<std::vector<std::uint32_t>>();
     std::string action = body.value("action", std::string{"hijack"});
@@ -74,13 +74,14 @@ void handle_batch_hijack(const httplib::Request& req, httplib::Response& res, ap
 } // namespace
 
 void register_process_handlers(route_registry& r) {
-    r.add({http_method::get,     "/api/processes",                       auth_policy::required, &handle_list_processes});
-    r.add({http_method::get,     R"(/api/processes/(\d+))",              auth_policy::required, &handle_process_by_pid});
-    r.add({http_method::get,     R"(/api/processes/(\d+)/detail)",       auth_policy::required, &handle_process_detail});
-    r.add({http_method::get,     "/api/hijack",                          auth_policy::required, &handle_list_hijacked});
-    r.add({http_method::post,    R"(/api/hijack/(\d+))",                 auth_policy::required, &handle_hijack});
-    r.add({http_method::delete_, R"(/api/hijack/(\d+))",                 auth_policy::required, &handle_unhijack});
-    r.add({http_method::post,    "/api/hijack/batch",                    auth_policy::required, &handle_batch_hijack});
+    using enum http_method;
+    r.add({get,     "/api/processes",                       &handle_list_processes});
+    r.add({get,     R"(/api/processes/(\d+))",              &handle_process_by_pid});
+    r.add({get,     R"(/api/processes/(\d+)/detail)",       &handle_process_detail});
+    r.add({get,     "/api/hijack",                          &handle_list_hijacked});
+    r.add({post,    R"(/api/hijack/(\d+))",                 &handle_hijack});
+    r.add({delete_, R"(/api/hijack/(\d+))",                 &handle_unhijack});
+    r.add({post,    "/api/hijack/batch",                    &handle_batch_hijack});
 }
 
 } // namespace clew

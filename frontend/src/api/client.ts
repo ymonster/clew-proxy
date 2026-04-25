@@ -1,55 +1,21 @@
 import type { AutoRule, ProcessInfo, Stats, TcpConnection, NetworkConnection, ProxyGroup, GroupInUseError, ProxyTestResult } from './types'
 
 const BASE = '/api'
-const TOKEN_STORAGE_KEY = 'clew_token'
 
-let authToken: string | null = null
-let authInitialized = false
-
-export async function initAuth(): Promise<void> {
-  try {
-    const res = await fetch(`${BASE}/bootstrap`)
-    if (!res.ok) return
-    const data = await res.json() as { auth_enabled?: boolean }
-    if (!data.auth_enabled) return
-    let stored = localStorage.getItem(TOKEN_STORAGE_KEY)
-    if (!stored) {
-      stored = globalThis.prompt('Clew API token required (from clew.json auth.token):') || ''
-      if (stored) localStorage.setItem(TOKEN_STORAGE_KEY, stored)
-    }
-    authToken = stored || null
-  } finally {
-    authInitialized = true
-  }
-}
-
-export function getAuthToken(): string | null {
-  return authToken
-}
-
-function authHeaders(): Record<string, string> {
-  return authToken ? { 'Authorization': `Bearer ${authToken}` } : {}
-}
+const JSON_HEADERS: HeadersInit = { 'Content-Type': 'application/json' }
 
 function mergeHeaders(init?: RequestInit): HeadersInit {
   return {
-    'Content-Type': 'application/json',
-    ...authHeaders(),
+    ...JSON_HEADERS,
     ...(init?.headers as Record<string, string> | undefined),
   }
 }
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
-  if (!authInitialized) await initAuth()
   const res = await fetch(`${BASE}${url}`, {
     ...options,
     headers: mergeHeaders(options),
   })
-  if (res.status === 401) {
-    localStorage.removeItem(TOKEN_STORAGE_KEY)
-    authToken = null
-    throw new Error('API error 401: unauthorized. Set auth.token in clew.json or clear localStorage and reload.')
-  }
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText)
     throw new Error(`API error ${res.status}: ${text}`)
@@ -62,16 +28,10 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
 }
 
 async function requestVoid(url: string, options?: RequestInit): Promise<void> {
-  if (!authInitialized) await initAuth()
   const res = await fetch(`${BASE}${url}`, {
     ...options,
     headers: mergeHeaders(options),
   })
-  if (res.status === 401) {
-    localStorage.removeItem(TOKEN_STORAGE_KEY)
-    authToken = null
-    throw new Error('API error 401: unauthorized.')
-  }
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText)
     throw new Error(`API error ${res.status}: ${text}`)
@@ -181,8 +141,6 @@ export function updateConfig(config: Record<string, unknown>): Promise<void> {
   })
 }
 
-// -- Proxy --
-
 // -- Proxy Groups --
 
 export function getProxyGroups(): Promise<ProxyGroup[]> {
@@ -204,7 +162,6 @@ export function updateProxyGroup(id: number, group: Partial<ProxyGroup>): Promis
 }
 
 export async function deleteProxyGroup(id: number): Promise<{ success: boolean } | GroupInUseError> {
-  if (!authInitialized) await initAuth()
   const res = await fetch(`${BASE}/proxy-groups/${id}`, {
     method: 'DELETE',
     headers: mergeHeaders(),

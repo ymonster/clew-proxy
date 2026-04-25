@@ -99,30 +99,6 @@ Rules 标签页
 - DNS 查询走 SOCKS5 到上游（默认 8.8.8.8）
 - 关闭 / 退出自动还原系统 DNS；异常退出下次启动会检测残留并恢复
 
-### 5. API Token（可选）
-
-后端 HTTP API 监听 `127.0.0.1:18080`，默认不鉴权。如果担心同机其他进程误调用写类接口（如 hijack、改配置），可以开启鉴权：
-
-编辑 `clew.json`：
-
-```json
-"auth": {
-  "enabled": true,
-  "token": "<你的随机字符串>"
-}
-```
-
-生成 token 的一种方式：
-
-```bash
-python -c "import secrets; print(secrets.token_hex(24))"
-```
-
-启用后：
-
-- WebView2 UI 首次打开会要求填一次 token，之后用 localStorage 记住
-- curl / 脚本带请求头 `Authorization: Bearer <token>`；SSE 不支持自定义头，用查询参数 `?token=<token>`
-
 ## 技术选择
 
 ### 第三方库

@@ -27,19 +27,19 @@ std::optional<std::uint32_t> pid_from_query(const httplib::Request& req) {
     }
 }
 
-void handle_tcp(const httplib::Request& req, httplib::Response& res, api_context& ctx) {
+void handle_tcp(const httplib::Request& req, httplib::Response& res, const api_context& ctx) {
     write_json(res, ctx.connections.list_tcp(pid_from_query(req)));
 }
 
-void handle_udp(const httplib::Request& req, httplib::Response& res, api_context& ctx) {
+void handle_udp(const httplib::Request& req, httplib::Response& res, const api_context& ctx) {
     write_json(res, ctx.connections.list_udp(pid_from_query(req)));
 }
 
 } // namespace
 
 void register_connection_handlers(route_registry& r) {
-    r.add({http_method::get, "/api/tcp", auth_policy::required, &handle_tcp});
-    r.add({http_method::get, "/api/udp", auth_policy::required, &handle_udp});
+    r.add({http_method::get, "/api/tcp", &handle_tcp});
+    r.add({http_method::get, "/api/udp", &handle_udp});
 }
 
 } // namespace clew

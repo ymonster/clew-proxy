@@ -22,7 +22,7 @@ namespace {
 
 constexpr auto kKeepAliveInterval = std::chrono::seconds(15);
 
-void handle_events(const httplib::Request&, httplib::Response& res, api_context& ctx) {
+void handle_events(const httplib::Request&, httplib::Response& res, const api_context& ctx) {
     res.set_header("Cache-Control", "no-cache");
     res.set_header("Connection",    "keep-alive");
 
@@ -52,7 +52,7 @@ void handle_events(const httplib::Request&, httplib::Response& res, api_context&
 } // namespace
 
 void register_sse_handlers(route_registry& r) {
-    r.add({http_method::get, "/api/events", auth_policy::required, &handle_events});
+    r.add({http_method::get, "/api/events", &handle_events});
 }
 
 } // namespace clew

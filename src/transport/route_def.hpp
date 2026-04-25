@@ -14,14 +14,12 @@ namespace clew {
 struct api_context;
 
 enum class http_method { get, post, put, delete_ };
-enum class auth_policy { required, public_endpoint };
 
-using route_handler_fn = void (*)(const httplib::Request&, httplib::Response&, api_context&);
+using route_handler_fn = void (*)(const httplib::Request&, httplib::Response&, const api_context&);
 
 struct route_def {
     http_method       method;
     std::string_view  pattern;  // httplib-style: literal path or regex
-    auth_policy       auth;
     route_handler_fn  handler;
 };
 

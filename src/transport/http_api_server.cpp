@@ -11,7 +11,6 @@
 #endif
 #include <windows.h>
 
-#include "auth/auth_middleware.hpp"
 #include "common/api_context.hpp"
 #include "core/log.hpp"
 #include "transport/middleware.hpp"
@@ -19,7 +18,6 @@
 
 // Handler modules define register_* functions in the ::clew namespace.
 namespace clew {
-void register_auth_handlers(route_registry&);
 void register_config_handlers(route_registry&);
 void register_connection_handlers(route_registry&);
 void register_group_handlers(route_registry&);
@@ -33,12 +31,10 @@ void register_stats_handlers(route_registry&);
 
 namespace clew::transport {
 
-http_api_server::http_api_server(int port, api_context& ctx, auth_middleware& mw,
-                                  std::string static_dir)
+http_api_server::http_api_server(int port, api_context& ctx, std::string static_dir)
     : port_(port)
     , static_dir_(std::move(static_dir))
-    , ctx_(ctx)
-    , mw_(mw) {
+    , ctx_(ctx) {
     // Expand the thread pool beyond httplib's default 8 so long-lived SSE
     // connections don't starve regular requests.
     server_.new_task_queue = [] { return new httplib::ThreadPool(32); };
@@ -47,8 +43,7 @@ http_api_server::http_api_server(int port, api_context& ctx, auth_middleware& mw
     install_options_handler(server_);
     install_cache_headers(server_);
 
-    clew::route_registry reg(server_, ctx_, mw_);
-    clew::register_auth_handlers(reg);
+    clew::route_registry reg(server_, ctx_);
     clew::register_config_handlers(reg);
     clew::register_connection_handlers(reg);
     clew::register_group_handlers(reg);
@@ -91,11 +86,9 @@ void http_api_server::stop() {
 
 std::string http_api_server::get_executable_dir() {
     char path[MAX_PATH];
-    DWORD len = GetModuleFileNameA(nullptr, path, MAX_PATH);
-    if (len > 0 && len < MAX_PATH) {
+    if (DWORD len = GetModuleFileNameA(nullptr, path, MAX_PATH); len > 0 && len < MAX_PATH) {
         std::string_view sv{path, static_cast<std::size_t>(len)};
-        auto last_sep = sv.find_last_of("\\/");
-        if (last_sep != std::string_view::npos) {
+        if (auto last_sep = sv.find_last_of("\\/"); last_sep != std::string_view::npos) {
             return std::string(sv.substr(0, last_sep));
         }
     }

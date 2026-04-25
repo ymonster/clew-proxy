@@ -157,66 +157,79 @@ private:
     TRACEHANDLE trace_handle_{INVALID_PROCESSTRACE_HANDLE};
     std::jthread trace_thread_;
 
+    // Decode a ProcessStart record's UserData into evt.
+    // Returns false if the buffer is too short to be valid.
+    static bool decode_start_event(const BYTE* data, USHORT len, etw_process_event& evt) {
+        if (len < 36) return false;
+
+        evt.type = etw_process_event::START;
+        evt.pid = *reinterpret_cast<const UINT32*>(data + 0);
+        std::memcpy(&evt.create_time, data + 12, sizeof(FILETIME));
+        evt.parent_pid = *reinterpret_cast<const UINT32*>(data + 20);
+
+        // ImageName: scan for path prefix instead of fixed offset.
+        // V3 has 11 fields (ImageName=%11), V2 has 6 (ImageName=%6).
+        // V3 adds ProcessSequenceNumber, ParentProcessSequenceNumber,
+        // ImageChecksum, TimeDateStamp, PackageFullName between
+        // SessionID and ImageName. Fixed offset unreliable across versions.
+        evt.image_name[0] = L'\0';
+        for (int off = 36; off < len - 4; off += 2) {
+            wchar_t c = *reinterpret_cast<const wchar_t*>(data + off);
+            if (c != L'\\') continue;
+
+            const wchar_t* img   = reinterpret_cast<const wchar_t*>(data + off);
+            const wchar_t* slash = wcsrchr(img, L'\\');
+            const wchar_t* name  = slash ? slash + 1 : img;
+            wcsncpy_s(evt.image_name, std::size(evt.image_name), name, _TRUNCATE);
+            break;
+        }
+        return true;
+    }
+
+    // Decode a ProcessStop record's UserData into evt.
+    // Returns false if the buffer is too short to be valid.
+    static bool decode_stop_event(const BYTE* data, USHORT len, etw_process_event& evt) {
+        if (len < 85) return false;
+
+        evt.type = etw_process_event::STOP;
+        evt.pid = *reinterpret_cast<const UINT32*>(data + 0);
+        std::memcpy(&evt.create_time, data + 12, sizeof(FILETIME));
+        evt.parent_pid = 0;
+
+        // ImageName at offset 84 (ANSI — asymmetry with ProcessStart's UTF-16).
+        // Verify NUL-terminated within bounds before strrchr touches it.
+        const char* ansi_name = reinterpret_cast<const char*>(data + 84);
+        bool valid = false;
+        for (int i = 84; i < len; i++) {
+            if (data[i] == 0) { valid = true; break; }
+        }
+        if (!valid) return true;  // event delivered, name stays empty
+
+        const char* slash = strrchr(ansi_name, '\\');
+        const char* name  = slash ? slash + 1 : ansi_name;
+        MultiByteToWideChar(CP_ACP, 0, name, -1, evt.image_name, 260);
+        return true;
+    }
+
     static void WINAPI event_record_callback(PEVENT_RECORD pEvent) {
         const auto* self = static_cast<const etw_consumer*>(pEvent->UserContext);
         if (!self || !self->running_) return;
         if (!IsEqualGUID(pEvent->EventHeader.ProviderId, KERNEL_PROCESS_GUID)) return;
 
-        const USHORT id = pEvent->EventHeader.EventDescriptor.Id;
+        const USHORT id  = pEvent->EventHeader.EventDescriptor.Id;
         const BYTE* data = static_cast<const BYTE*>(pEvent->UserData);
         const USHORT len = pEvent->UserDataLength;
 
         etw_process_event evt{};
         evt.received_at = std::chrono::steady_clock::now();
 
+        bool decoded = false;
         if (id == EVENT_PROCESS_START) {
-            if (len < 36) return;
-            evt.type = etw_process_event::START;
-            evt.pid = *reinterpret_cast<const UINT32*>(data + 0);
-            std::memcpy(&evt.create_time, data + 12, sizeof(FILETIME));
-            evt.parent_pid = *reinterpret_cast<const UINT32*>(data + 20);
-
-            // ImageName: scan for path prefix instead of fixed offset.
-            // V3 has 11 fields (ImageName=%11), V2 has 6 (ImageName=%6).
-            // V3 adds ProcessSequenceNumber, ParentProcessSequenceNumber,
-            // ImageChecksum, TimeDateStamp, PackageFullName between
-            // SessionID and ImageName. Fixed offset unreliable across versions.
-            evt.image_name[0] = L'\0';
-            for (int off = 36; off < len - 4; off += 2) {
-                wchar_t c = *reinterpret_cast<const wchar_t*>(data + off);
-                if (c == L'\\') {
-                    const wchar_t* img = reinterpret_cast<const wchar_t*>(data + off);
-                    const wchar_t* slash = wcsrchr(img, L'\\');
-                    const wchar_t* name = slash ? slash + 1 : img;
-                    wcsncpy_s(evt.image_name, std::size(evt.image_name),
-                              name, _TRUNCATE);
-                    break;
-                }
-            }
+            decoded = decode_start_event(data, len, evt);
+        } else if (id == EVENT_PROCESS_STOP) {
+            decoded = decode_stop_event(data, len, evt);
         }
-        else if (id == EVENT_PROCESS_STOP) {
-            if (len < 85) return;
-            evt.type = etw_process_event::STOP;
-            evt.pid = *reinterpret_cast<const UINT32*>(data + 0);
-            std::memcpy(&evt.create_time, data + 12, sizeof(FILETIME));
-            evt.parent_pid = 0;
-
-            // ImageName at offset 84 (ANSI! — asymmetry with ProcessStart)
-            const char* ansi_name = reinterpret_cast<const char*>(data + 84);
-            // Safety check
-            bool valid = false;
-            for (int i = 84; i < len; i++) {
-                if (data[i] == 0) { valid = true; break; }
-            }
-            if (valid) {
-                const char* slash = strrchr(ansi_name, '\\');
-                const char* name = slash ? slash + 1 : ansi_name;
-                MultiByteToWideChar(CP_ACP, 0, name, -1, evt.image_name, 260);
-            }
-        }
-        else {
-            return;
-        }
+        if (!decoded) return;
 
         self->callback_(evt);
     }
@@ -236,7 +249,7 @@ private:
             props->LoggerNameOffset = sizeof(EVENT_TRACE_PROPERTIES);
             ControlTraceW(0, SESSION_NAME, props, EVENT_TRACE_CONTROL_STOP);
         } catch (const std::bad_alloc&) {
-            // Cleanup on OOM — cannot allocate, skip silently
+            PC_LOG_WARN("[etw] cleanup_session: OOM allocating props buffer; skipping orphan reap");
         }
     }
 
@@ -253,8 +266,8 @@ private:
             props->LoggerNameOffset = sizeof(EVENT_TRACE_PROPERTIES);
             ControlTraceW(session_handle_, nullptr, props, EVENT_TRACE_CONTROL_STOP);
         } catch (const std::bad_alloc&) {
-            // OOM during shutdown — skip silently; kernel session will be
-            // reaped next start() via cleanup_session orphan handling
+            PC_LOG_WARN("[etw] stop_session: OOM allocating props buffer; "
+                        "kernel session will be reaped on next start");
         }
         session_handle_ = 0;
     }

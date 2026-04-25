@@ -16,7 +16,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 fail() {
-    echo "FAIL: $1" >&2
+    local msg=$1
+    echo "FAIL: $msg" >&2
     exit 1
 }
 
@@ -24,7 +25,7 @@ fail() {
 # 1/3 build
 # ---------------------------------------------------------------------------
 echo "==> 1/3 build"
-if [ ! -d build ]; then
+if [[ ! -d build ]]; then
     fail "build/ directory missing. Run 'cmake --preset windows-vcpkg' first."
 fi
 cmake --build build --config Release --target clew
@@ -36,13 +37,16 @@ echo
 echo "==> 2/3 layering grep"
 
 grep_must_be_empty() {
-    # $1 = pattern, $2 = path, $3 = failure message
+    local pattern=$1
+    local search_path=$2
+    local message=$3
     local hits
-    hits=$(grep -rn "$1" "$2" 2>/dev/null || true)
-    if [ -n "$hits" ]; then
+    hits=$(grep -rn "$pattern" "$search_path" 2>/dev/null || true)
+    if [[ -n "$hits" ]]; then
         echo "$hits" | head -5 >&2
-        fail "$3"
+        fail "$message"
     fi
+    return 0
 }
 
 grep_must_be_empty 'asio\.hpp\|asio::'     'src/services/'          'services must not touch asio (H1 layering)'
@@ -53,9 +57,9 @@ grep_must_be_empty 'strand_bound'          'src/transport/handlers/' 'handlers m
 # config_manager.hpp must only be included from config_store.hpp across the
 # new-architecture directories.
 leaks=$(grep -rln 'config_manager\.hpp' \
-    src/services src/auth src/projection src/transport src/common src/domain \
+    src/services src/projection src/transport src/common src/domain \
     2>/dev/null | grep -v '/config_store\.hpp$' || true)
-if [ -n "$leaks" ]; then
+if [[ -n "$leaks" ]]; then
     echo "$leaks" >&2
     fail 'config_manager.hpp leaked into new-arch code (only config_store.hpp may include it)'
 fi
@@ -64,7 +68,7 @@ fi
 for cpp in src/services/*.cpp; do
     self="$(basename "$cpp" .cpp)"
     bad=$(grep -E '#include "services/' "$cpp" | grep -v "services/${self}\\.hpp" || true)
-    if [ -n "$bad" ]; then
+    if [[ -n "$bad" ]]; then
         echo "$cpp:" >&2
         echo "$bad" >&2
         fail 'service-to-service include detected (services must not depend on each other)'

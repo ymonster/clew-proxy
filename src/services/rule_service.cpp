@@ -12,6 +12,7 @@
 #include <windows.h>
 
 #include "common/api_exception.hpp"
+#include "common/json_patch.hpp"
 #include "config/config_change_tag.hpp"
 #include "config/config_store.hpp"
 #include "domain/process_tree_manager.hpp"
@@ -20,29 +21,36 @@
 
 namespace clew {
 
+namespace {
+
+nlohmann::json rule_entry_to_json(const AutoRule& rule, const flat_tree& tree) {
+    nlohmann::json rj = rule;
+    rj["matched_count"]  = rule.matched_pids.size();
+    rj["excluded_count"] = rule.excluded_pids.size();
+    nlohmann::json pids  = nlohmann::json::array();
+    for (DWORD pid : rule.matched_pids) {
+        nlohmann::json p;
+        p["pid"]      = pid;
+        uint32_t idx  = tree.find_by_pid(pid);
+        p["name"]     = (idx != INVALID_IDX) ? std::string(tree.at(idx).name_u8) : "unknown";
+        p["excluded"] = rule.excluded_pids.contains(pid);
+        pids.push_back(std::move(p));
+    }
+    rj["matched_pids"] = std::move(pids);
+    return rj;
+}
+
+} // namespace
+
 rule_service::rule_service(strand_bound_manager& exec, config_store& cfg)
     : exec_(exec), cfg_(cfg) {}
 
 nlohmann::json rule_service::list_rules() const {
     return exec_.query([](const domain::process_tree_manager& m) -> nlohmann::json {
-        const auto& tree  = m.tree();
-        const auto& rules = m.rules().auto_rules();
+        const auto& tree   = m.tree();
         nlohmann::json arr = nlohmann::json::array();
-        for (const auto& rule : rules) {
-            nlohmann::json rj = rule;
-            rj["matched_count"]  = rule.matched_pids.size();
-            rj["excluded_count"] = rule.excluded_pids.size();
-            nlohmann::json pids  = nlohmann::json::array();
-            for (DWORD pid : rule.matched_pids) {
-                nlohmann::json p;
-                p["pid"]      = pid;
-                uint32_t idx  = tree.find_by_pid(pid);
-                p["name"]     = (idx != INVALID_IDX) ? std::string(tree.at(idx).name_u8) : "unknown";
-                p["excluded"] = rule.excluded_pids.contains(pid);
-                pids.push_back(std::move(p));
-            }
-            rj["matched_pids"] = std::move(pids);
-            arr.push_back(std::move(rj));
+        for (const auto& rule : m.rules().auto_rules()) {
+            arr.push_back(rule_entry_to_json(rule, tree));
         }
         return arr;
     });
@@ -63,20 +71,21 @@ void rule_service::create_rule(AutoRule rule) {
 void rule_service::update_rule(std::string_view id, const nlohmann::json& patch) {
     bool found = false;
     cfg_.mutate(
-        [&](ConfigV2& c) {
+        [&found, id, &patch](ConfigV2& c) {
             for (auto& r : c.auto_rules) {
                 if (r.id == id) {
                     found = true;
-                    if (patch.contains("name"))               r.name = patch["name"];
-                    if (patch.contains("enabled"))            r.enabled = patch["enabled"];
-                    if (patch.contains("process_name"))       r.process_name = patch["process_name"];
-                    if (patch.contains("cmdline_pattern"))    r.cmdline_pattern = patch["cmdline_pattern"];
-                    if (patch.contains("image_path_pattern")) r.image_path_pattern = patch["image_path_pattern"];
-                    if (patch.contains("hack_tree"))          r.hack_tree = patch["hack_tree"];
-                    if (patch.contains("proxy_group_id"))     r.proxy_group_id = patch["proxy_group_id"];
-                    if (patch.contains("protocol"))           r.protocol = patch["protocol"];
-                    if (patch.contains("proxy"))              r.proxy = patch["proxy"].get<ProxyTarget>();
-                    if (patch.contains("dst_filter"))         r.dst_filter = patch["dst_filter"].get<TrafficFilter>();
+                    apply_patch(r, patch,
+                        field_binding{"name",               &AutoRule::name},
+                        field_binding{"enabled",            &AutoRule::enabled},
+                        field_binding{"process_name",       &AutoRule::process_name},
+                        field_binding{"cmdline_pattern",    &AutoRule::cmdline_pattern},
+                        field_binding{"image_path_pattern", &AutoRule::image_path_pattern},
+                        field_binding{"hack_tree",          &AutoRule::hack_tree},
+                        field_binding{"proxy_group_id",     &AutoRule::proxy_group_id},
+                        field_binding{"protocol",           &AutoRule::protocol},
+                        field_binding{"proxy",              &AutoRule::proxy},
+                        field_binding{"dst_filter",         &AutoRule::dst_filter});
                     break;
                 }
             }
@@ -91,9 +100,9 @@ void rule_service::update_rule(std::string_view id, const nlohmann::json& patch)
 void rule_service::delete_rule(std::string_view id) {
     bool found = false;
     cfg_.mutate(
-        [&](ConfigV2& c) {
+        [&found, id](ConfigV2& c) {
             auto it = std::find_if(c.auto_rules.begin(), c.auto_rules.end(),
-                                   [&](const AutoRule& r) { return r.id == id; });
+                                   [id](const AutoRule& r) { return r.id == id; });
             if (it != c.auto_rules.end()) {
                 c.auto_rules.erase(it);
                 found = true;
@@ -109,7 +118,7 @@ void rule_service::delete_rule(std::string_view id) {
 void rule_service::exclude_pid(std::string_view rule_id, std::uint32_t pid) {
     bool found = false;
     cfg_.mutate(
-        [&](ConfigV2& c) {
+        [&found, rule_id, pid](ConfigV2& c) {
             for (auto& r : c.auto_rules) {
                 if (r.id == rule_id) {
                     r.excluded_pids.insert(static_cast<DWORD>(pid));
@@ -128,7 +137,7 @@ void rule_service::exclude_pid(std::string_view rule_id, std::uint32_t pid) {
 void rule_service::unexclude_pid(std::string_view rule_id, std::uint32_t pid) {
     bool found = false;
     cfg_.mutate(
-        [&](ConfigV2& c) {
+        [&found, rule_id, pid](ConfigV2& c) {
             for (auto& r : c.auto_rules) {
                 if (r.id == rule_id) {
                     found = r.excluded_pids.erase(static_cast<DWORD>(pid)) > 0 || found;

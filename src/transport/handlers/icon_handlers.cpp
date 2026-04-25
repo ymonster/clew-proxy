@@ -17,7 +17,7 @@ namespace clew {
 
 namespace {
 
-void handle_icon(const httplib::Request& req, httplib::Response& res, api_context& ctx) {
+void handle_icon(const httplib::Request& req, httplib::Response& res, const api_context& ctx) {
     if (!req.has_param("name")) {
         throw api_exception{api_error::invalid_argument, "name parameter required"};
     }
@@ -34,7 +34,7 @@ void handle_icon(const httplib::Request& req, httplib::Response& res, api_contex
 } // namespace
 
 void register_icon_handlers(route_registry& r) {
-    r.add({http_method::get, "/api/icon", auth_policy::required, &handle_icon});
+    r.add({http_method::get, "/api/icon", &handle_icon});
 }
 
 } // namespace clew

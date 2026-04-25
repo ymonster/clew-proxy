@@ -239,102 +239,115 @@ private:
         return HTCLIENT;  // WebView2 handles the rest (drag regions via CSS)
     }
 
-    static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
-        webview_app* app = nullptr;
-        if (msg == WM_CREATE) {
-            CREATESTRUCT* cs = reinterpret_cast<CREATESTRUCT*>(lparam);
-            app = static_cast<webview_app*>(cs->lpCreateParams);
-            SetWindowLongPtr(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(app));
-        } else {
-            app = reinterpret_cast<webview_app*>(GetWindowLongPtr(hwnd, GWLP_USERDATA));
+    // WM_NCCALCSIZE handler — remove the system title bar and clamp the
+    // proposed rect to the monitor's work area when the window is maximized
+    // (otherwise it would extend over the taskbar).
+    static LRESULT handle_nccalcsize(NCCALCSIZE_PARAMS* params) {
+        auto& rect = params->rgrc[0];
+        HMONITOR mon = MonitorFromRect(&rect, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO mi = { sizeof(mi) };
+        if (GetMonitorInfoW(mon, &mi) &&
+            rect.left <= mi.rcMonitor.left && rect.top <= mi.rcMonitor.top &&
+            rect.right >= mi.rcMonitor.right && rect.bottom >= mi.rcMonitor.bottom) {
+            rect = mi.rcWork;
         }
+        return 0;
+    }
 
-        // WM_NCCALCSIZE: remove system title bar; handle maximized state properly
-        if (msg == WM_NCCALCSIZE && wparam == TRUE) {
-            auto& rect = reinterpret_cast<NCCALCSIZE_PARAMS*>(lparam)->rgrc[0];
-            HMONITOR mon = MonitorFromRect(&rect, MONITOR_DEFAULTTONEAREST);
-            MONITORINFO mi = { sizeof(mi) };
-            // Detect maximize: proposed rect covers or exceeds the full monitor rect
-            if (GetMonitorInfoW(mon, &mi) &&
-                rect.left <= mi.rcMonitor.left && rect.top <= mi.rcMonitor.top &&
-                rect.right >= mi.rcMonitor.right && rect.bottom >= mi.rcMonitor.bottom) {
-                rect = mi.rcWork;  // constrain to work area (respects taskbar)
-            }
+    LRESULT on_size(WPARAM wparam) {
+        resize_webview();
+        if (initialized_) {
+            execute_script(wparam == SIZE_MAXIMIZED
+                ? L"document.documentElement.classList.add('maximized')"
+                : L"document.documentElement.classList.remove('maximized')");
+        }
+        return 0;
+    }
+
+    LRESULT on_close(HWND hwnd) {
+        if (close_to_tray_) {
+            ShowWindow(hwnd, SW_HIDE);
             return 0;
         }
+        if (on_close_) on_close_();
+        DestroyWindow(hwnd);
+        return 0;
+    }
 
-        // Suppress background erase to prevent white flash
+    LRESULT on_destroy() {
+        remove_tray_icon();
+        PostQuitMessage(0);
+        return 0;
+    }
+
+    static LRESULT on_getminmaxinfo(LPARAM lparam) {
+        MINMAXINFO* mmi = reinterpret_cast<MINMAXINFO*>(lparam);
+        mmi->ptMinTrackSize.x = 900;
+        mmi->ptMinTrackSize.y = 600;
+        return 0;
+    }
+
+    LRESULT on_exitsizemove(HWND hwnd) {
+        if (on_move_resize_) {
+            RECT r;
+            GetWindowRect(hwnd, &r);
+            on_move_resize_(r.left, r.top, r.right - r.left, r.bottom - r.top);
+        }
+        return 0;
+    }
+
+    LRESULT on_trayicon(LPARAM lparam) {
+        if (LOWORD(lparam) == WM_LBUTTONUP) {
+            restore_window();
+        } else if (LOWORD(lparam) == WM_RBUTTONUP) {
+            show_tray_menu();
+        }
+        return 0;
+    }
+
+    LRESULT on_command(HWND hwnd, WPARAM wparam) {
+        if (LOWORD(wparam) == IDM_TRAY_SHOW) {
+            restore_window();
+        } else if (LOWORD(wparam) == IDM_TRAY_EXIT) {
+            if (on_close_) on_close_();
+            DestroyWindow(hwnd);
+        }
+        return 0;
+    }
+
+    static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
+        if (msg == WM_CREATE) {
+            auto* cs  = reinterpret_cast<CREATESTRUCT*>(lparam);
+            auto* app = static_cast<webview_app*>(cs->lpCreateParams);
+            SetWindowLongPtr(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(app));
+            return DefWindowProc(hwnd, msg, wparam, lparam);
+        }
+
+        // WM_NCCALCSIZE doesn't need an app pointer; handle before the lookup.
+        if (msg == WM_NCCALCSIZE && wparam == TRUE) {
+            return handle_nccalcsize(reinterpret_cast<NCCALCSIZE_PARAMS*>(lparam));
+        }
+        // Suppress background erase to prevent white flash.
         if (msg == WM_ERASEBKGND) return 1;
 
-        if (app) {
-            switch (msg) {
+        auto* app = reinterpret_cast<webview_app*>(GetWindowLongPtr(hwnd, GWLP_USERDATA));
+        if (!app) return DefWindowProc(hwnd, msg, wparam, lparam);
 
-                case WM_NCHITTEST: {
-                    LRESULT hit = app->handle_nchittest(hwnd, lparam);
-                    if (hit != HTCLIENT) return hit;
-                    // Fall through to DefWindowProc for WebView2 to handle drag regions
-                    break;
-                }
-
-                case WM_SIZE:
-                    app->resize_webview();
-                    // Notify frontend of maximize state for padding adjustment
-                    if (app->initialized_) {
-                        app->execute_script(wparam == SIZE_MAXIMIZED
-                            ? L"document.documentElement.classList.add('maximized')"
-                            : L"document.documentElement.classList.remove('maximized')");
-                    }
-                    return 0;
-
-                case WM_CLOSE:
-                    if (app->close_to_tray_) {
-                        ShowWindow(hwnd, SW_HIDE);
-                        return 0;
-                    }
-                    if (app->on_close_) app->on_close_();
-                    DestroyWindow(hwnd);
-                    return 0;
-
-                case WM_DESTROY:
-                    app->remove_tray_icon();
-                    PostQuitMessage(0);
-                    return 0;
-
-                case WM_GETMINMAXINFO: {
-                    MINMAXINFO* mmi = reinterpret_cast<MINMAXINFO*>(lparam);
-                    mmi->ptMinTrackSize.x = 900;
-                    mmi->ptMinTrackSize.y = 600;
-                    return 0;
-                }
-
-                case WM_EXITSIZEMOVE:
-                    if (app->on_move_resize_) {
-                        RECT r;
-                        GetWindowRect(hwnd, &r);
-                        app->on_move_resize_(r.left, r.top, r.right - r.left, r.bottom - r.top);
-                    }
-                    return 0;
-
-                case WM_TRAYICON:
-                    if (LOWORD(lparam) == WM_LBUTTONUP) {
-                        app->restore_window();
-                    } else if (LOWORD(lparam) == WM_RBUTTONUP) {
-                        app->show_tray_menu();
-                    }
-                    return 0;
-
-                case WM_COMMAND:
-                    if (LOWORD(wparam) == IDM_TRAY_SHOW) {
-                        app->restore_window();
-                    } else if (LOWORD(wparam) == IDM_TRAY_EXIT) {
-                        if (app->on_close_) app->on_close_();
-                        DestroyWindow(hwnd);
-                    }
-                    return 0;
-
-                default:
-                    break;  // fall through to DefWindowProc
+        switch (msg) {
+            case WM_NCHITTEST: {
+                LRESULT hit = app->handle_nchittest(hwnd, lparam);
+                // Fall through to DefWindowProc so WebView2 gets drag regions.
+                if (hit != HTCLIENT) return hit;
+                break;
             }
+            case WM_SIZE:           return app->on_size(wparam);
+            case WM_CLOSE:          return app->on_close(hwnd);
+            case WM_DESTROY:        return app->on_destroy();
+            case WM_GETMINMAXINFO:  return on_getminmaxinfo(lparam);
+            case WM_EXITSIZEMOVE:   return app->on_exitsizemove(hwnd);
+            case WM_TRAYICON:       return app->on_trayicon(lparam);
+            case WM_COMMAND:        return app->on_command(hwnd, wparam);
+            default:                break;
         }
         return DefWindowProc(hwnd, msg, wparam, lparam);
     }

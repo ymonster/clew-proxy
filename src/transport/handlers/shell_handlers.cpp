@@ -15,11 +15,11 @@ namespace clew {
 
 namespace {
 
-void handle_browse_exe(const httplib::Request&, httplib::Response& res, api_context&) {
+void handle_browse_exe(const httplib::Request&, httplib::Response& res, const api_context&) {
     write_json(res, shell_service::browse_exe());
 }
 
-void handle_reveal(const httplib::Request& req, httplib::Response& res, api_context&) {
+void handle_reveal(const httplib::Request& req, httplib::Response& res, const api_context&) {
     auto body = parse_json_body(req);
     std::string path = body.value("path", std::string{});
     shell_service::reveal(path);
@@ -29,8 +29,8 @@ void handle_reveal(const httplib::Request& req, httplib::Response& res, api_cont
 } // namespace
 
 void register_shell_handlers(route_registry& r) {
-    r.add({http_method::post, "/api/shell/browse-exe", auth_policy::required, &handle_browse_exe});
-    r.add({http_method::post, "/api/shell/reveal",     auth_policy::required, &handle_reveal});
+    r.add({http_method::post, "/api/shell/browse-exe", &handle_browse_exe});
+    r.add({http_method::post, "/api/shell/reveal",     &handle_reveal});
 }
 
 } // namespace clew

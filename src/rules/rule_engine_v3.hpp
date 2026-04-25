@@ -233,68 +233,30 @@ public:
     std::optional<std::string> on_process_start(flat_tree& tree, uint32_t idx) {
         const auto& entry = tree.at(idx);
         if (!entry.alive) return std::nullopt;
-
         std::string name(entry.name_u8);
 
         for (auto& rule : auto_rules_) {
-            if (!rule.enabled) continue;
-            if (rule.excluded_pids.contains(entry.pid)) continue;
-            if (rule.matched_pids.contains(entry.pid)) continue;
+            auto kind = try_match_one(tree, idx, rule);
+            if (!kind.name && !kind.tree) continue;
 
-            bool name_match = false;
-            bool tree_match = false;
-
-            // Direct name match
-            if (!rule.process_name.empty() && wildcard_match(rule.process_name, name)) {
-                if (!rule.cmdline_pattern.empty() && !check_cmdline(tree, idx, rule)) {
-                    continue;  // name matched but cmdline didn't
-                }
-                if (!rule.image_path_pattern.empty() && !check_image_path(tree, idx, rule)) {
-                    continue;  // name matched but image path didn't
-                }
-                name_match = true;
+            rule.matched_pids.insert(entry.pid);
+            mark_proxied(tree, idx, rule);
+            // For hack_tree name matches: also expand to all existing descendants.
+            if (kind.name && rule.hack_tree) {
+                expand_descendants(tree, idx, rule);
             }
-
-            // Tree inheritance: parent is already matched by this rule
-            if (!name_match && rule.hack_tree && entry.parent_pid != 0 &&
-                rule.matched_pids.contains(entry.parent_pid)) {
-                tree_match = true;
-            }
-
-            if (name_match || tree_match) {
-                rule.matched_pids.insert(entry.pid);
-                mark_proxied(tree, idx, rule);
-
-                // For hack_tree name matches: also expand to all existing descendants
-                if (name_match && rule.hack_tree) {
-                    expand_descendants(tree, idx, rule);
-                }
-
-                PC_LOG_INFO("[RULE] {} PID={} ({}) → rule '{}' group={}",
-                             tree_match ? "Tree-inherited" : "Auto-matched",
-                             entry.pid, name, rule.name, rule.proxy_group_id);
-                return rule.id;
-            }
+            PC_LOG_INFO("[RULE] {} PID={} ({}) → rule '{}' group={}",
+                         kind.tree ? "Tree-inherited" : "Auto-matched",
+                         entry.pid, name, rule.name, rule.proxy_group_id);
+            return rule.id;
         }
 
-        // Unified tree inheritance: if no auto rule matched,
-        // check if parent is manually hijacked → inherit
-        if (entry.parent_pid != 0) {
-            uint32_t parent_idx = tree.find_by_pid(entry.parent_pid);
-            if (parent_idx != INVALID_IDX) {
-                const auto& parent = tree.at(parent_idx);
-                if (parent.alive && parent.has_flag(entry_flags::MANUAL_HIJACK)) {
-                    auto& child = tree.at(idx);
-                    child.group_id = parent.group_id;
-                    child.set_flag(entry_flags::MANUAL_HIJACK);
-
-                    PC_LOG_INFO("[RULE] Manual tree-inherit: PID={} ({}) from parent PID={} group={}",
-                                 entry.pid, name, entry.parent_pid, parent.group_id);
-                    return std::format("manual:tree:{}", entry.parent_pid);
-                }
-            }
+        // No auto rule matched — try manual hijack inheritance from parent.
+        if (DWORD parent_pid = try_inherit_manual(tree, idx); parent_pid != 0) {
+            PC_LOG_INFO("[RULE] Manual tree-inherit: PID={} ({}) from parent PID={}",
+                         entry.pid, name, parent_pid);
+            return std::format("manual:tree:{}", parent_pid);
         }
-
         return std::nullopt;
     }
 
@@ -446,30 +408,71 @@ private:
             });
     }
 
-    // Apply a single auto rule to all alive entries
+    // Per-entry match decision against a single rule. Pure (no side effects).
+    // - name: entry passes process_name + cmdline + image_path filters
+    // - tree: entry inherits via parent already in matched_pids (hack_tree only)
+    // Both false → no match. Empty process_name never name-matches; cmdline /
+    // image_path are filters on top of the name match (matches the documented
+    // semantics in README).
+    struct match_kind { bool name = false; bool tree = false; };
+
+    match_kind try_match_one(flat_tree& tree, uint32_t idx, AutoRule& rule) {
+        const auto& entry = tree.at(idx);
+        if (!rule.enabled) return {};
+        if (!entry.alive) return {};
+        if (rule.excluded_pids.contains(entry.pid)) return {};
+        if (rule.matched_pids.contains(entry.pid)) return {};
+
+        const bool name_match =
+            !rule.process_name.empty()
+            && wildcard_match(rule.process_name, std::string{entry.name_u8})
+            && check_cmdline(tree, idx, rule)
+            && check_image_path(tree, idx, rule);
+
+        const bool tree_match =
+            !name_match && rule.hack_tree && entry.parent_pid != 0
+            && rule.matched_pids.contains(entry.parent_pid);
+
+        return {name_match, tree_match};
+    }
+
+    // If parent has MANUAL_HIJACK, propagate group_id + flag to child.
+    // Returns parent_pid on success, 0 if no inheritance happened.
+    DWORD try_inherit_manual(flat_tree& tree, uint32_t idx) {
+        const auto& entry = tree.at(idx);
+        if (entry.parent_pid == 0) return 0;
+        uint32_t parent_idx = tree.find_by_pid(entry.parent_pid);
+        if (parent_idx == INVALID_IDX) return 0;
+        const auto& parent = tree.at(parent_idx);
+        if (!parent.alive || !parent.has_flag(entry_flags::MANUAL_HIJACK)) return 0;
+
+        auto& child = tree.at(idx);
+        child.group_id = parent.group_id;
+        child.set_flag(entry_flags::MANUAL_HIJACK);
+        return entry.parent_pid;
+    }
+
+    // Apply a single auto rule to all alive entries.
+    // Phase 1: collect direct name matches. Phase 2 (hack_tree only): expand
+    // from roots whose parent is NOT itself name-matched, so each name-matched
+    // chain has exactly one expansion root.
     void apply_single_rule(flat_tree& tree, AutoRule& rule) {
-        // Single scan: collect matches via guard clauses. For hack_tree mode
-        // we stage them in `name_matched` first; otherwise insert directly.
         std::unordered_set<DWORD> name_matched;
 
         for (uint32_t i = 0; i < tree.entries().size(); i++) {
-            const auto& entry = tree.entries()[i];
+            // Bulk apply only cares about direct name matches; hack_tree
+            // expansion is handled in phase 2 from name_matched roots.
+            if (!try_match_one(tree, i, rule).name) continue;
 
-            if (!entry.alive || rule.excluded_pids.contains(entry.pid)) continue;
-
-            if (!rule.process_name.empty() && !wildcard_match(rule.process_name, entry.name_u8)) continue;
-            if (!rule.cmdline_pattern.empty() && !check_cmdline(tree, i, rule)) continue;
-            if (!rule.image_path_pattern.empty() && !check_image_path(tree, i, rule)) continue;
-
+            const DWORD pid = tree.entries()[i].pid;
             if (rule.hack_tree) {
-                name_matched.insert(entry.pid);
+                name_matched.insert(pid);
             } else {
-                rule.matched_pids.insert(entry.pid);
+                rule.matched_pids.insert(pid);
                 mark_proxied(tree, i, rule);
             }
         }
 
-        // hack_tree mode: find roots (parent not matched) and expand descendants.
         if (rule.hack_tree) {
             for (DWORD pid : name_matched) {
                 uint32_t idx = tree.find_by_pid(pid);
@@ -478,7 +481,6 @@ private:
 
                 rule.matched_pids.insert(pid);
                 mark_proxied(tree, idx, rule);
-
                 if (!name_matched.contains(entry.parent_pid)) {
                     expand_descendants(tree, idx, rule);
                 }

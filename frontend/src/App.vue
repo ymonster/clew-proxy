@@ -40,7 +40,8 @@ const { current: statusMessage, pushError } = useStatusBus()
 // Window control (WebView2 postMessage)
 const isMaximized = ref(document.documentElement.classList.contains('maximized'))
 function windowCmd(cmd: string) {
-  // NOSONAR: chrome.webview type is augmented on Window (see declare global above)
+  // chrome.webview is augmented on Window (declare global above) — globalThis
+  // doesn't pick up the augmentation, so we use window deliberately.
   window.chrome?.webview?.postMessage(cmd)
 }
 // Watch for maximize class changes (set by C++ via execute_script)

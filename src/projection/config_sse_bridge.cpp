@@ -16,17 +16,18 @@ namespace clew {
 namespace {
 
 std::string_view tag_to_action(config_change tag) noexcept {
+    using enum config_change;
     switch (tag) {
-        case config_change::rule_created:       return "created";
-        case config_change::rule_updated:       return "updated";
-        case config_change::rule_deleted:       return "deleted";
-        case config_change::rule_excluded:      return "exclude";
-        case config_change::rule_unexcluded:    return "unexclude";
-        case config_change::group_created:      return "group_created";
-        case config_change::group_updated:      return "group_updated";
-        case config_change::group_deleted:      return "group_deleted";
-        case config_change::group_migrated:     return "migrated";
-        case config_change::wholesale_replaced: return "config_reload";
+        case rule_created:       return "created";
+        case rule_updated:       return "updated";
+        case rule_deleted:       return "deleted";
+        case rule_excluded:      return "exclude";
+        case rule_unexcluded:    return "unexclude";
+        case group_created:      return "group_created";
+        case group_updated:      return "group_updated";
+        case group_deleted:      return "group_deleted";
+        case group_migrated:     return "migrated";
+        case wholesale_replaced: return "config_reload";
     }
     return "unknown";
 }

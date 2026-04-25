@@ -14,6 +14,7 @@
 #include <windows.h>
 
 #include "common/api_exception.hpp"
+#include "common/json_patch.hpp"
 #include "config/config_change_tag.hpp"
 #include "config/config_store.hpp"
 #include "config/types.hpp"
@@ -46,7 +47,7 @@ nlohmann::json group_service::list_groups() const {
 nlohmann::json group_service::create_group(const nlohmann::json& body) {
     ProxyGroup group;
     cfg_.mutate(
-        [&](ConfigV2& c) {
+        [&group, &body](ConfigV2& c) {
             group.id       = c.next_group_id++;
             group.name     = body.value("name", std::format("group_{}", group.id));
             group.host     = body.value("host", std::string{"127.0.0.1"});
@@ -62,15 +63,16 @@ nlohmann::json group_service::create_group(const nlohmann::json& body) {
 void group_service::update_group(std::uint32_t id, const nlohmann::json& patch) {
     bool found = false;
     cfg_.mutate(
-        [&](ConfigV2& c) {
+        [&found, id, &patch](ConfigV2& c) {
             for (auto& g : c.proxy_groups) {
                 if (g.id == id) {
                     found = true;
-                    if (patch.contains("name"))     g.name     = patch["name"];
-                    if (patch.contains("host"))     g.host     = patch["host"];
-                    if (patch.contains("port"))     g.port     = patch["port"];
-                    if (patch.contains("type"))     g.type     = patch["type"];
-                    if (patch.contains("test_url")) g.test_url = patch["test_url"];
+                    apply_patch(g, patch,
+                        field_binding{"name",     &ProxyGroup::name},
+                        field_binding{"host",     &ProxyGroup::host},
+                        field_binding{"port",     &ProxyGroup::port},
+                        field_binding{"type",     &ProxyGroup::type},
+                        field_binding{"test_url", &ProxyGroup::test_url});
                     break;
                 }
             }
@@ -117,8 +119,8 @@ void group_service::delete_group(std::uint32_t id) {
             }
             return count;
         });
-    } catch (const std::exception& e) {
-        PC_LOG_WARN("[group_service] strand query failed during delete: {}", e.what());
+    } catch (const api_exception& e) {
+        PC_LOG_WARN("[group_service] strand query failed during delete: {}", e.message());
     }
 
     if (!referencing_rules.empty() || manual_count > 0) {

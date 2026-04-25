@@ -1,6 +1,5 @@
 import { ref, readonly } from 'vue'
 import type { ProcessInfo, AutoRule } from './types'
-import { getAuthToken, initAuth } from './client'
 
 export interface SSEEvents {
   process_update: ProcessInfo
@@ -25,11 +24,7 @@ async function connect(): Promise<void> {
   connectInFlight = (async () => {
     if (eventSource) eventSource.close()
 
-    await initAuth()
-
-    const token = getAuthToken()
-    const url = token ? `/api/events?token=${encodeURIComponent(token)}` : '/api/events'
-    eventSource = new EventSource(url)
+    eventSource = new EventSource('/api/events')
 
     eventSource.onopen = () => {
       connected.value = true

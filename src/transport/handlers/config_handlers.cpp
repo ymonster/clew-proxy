@@ -13,11 +13,11 @@ namespace clew {
 
 namespace {
 
-void handle_get_config(const httplib::Request&, httplib::Response& res, api_context& ctx) {
+void handle_get_config(const httplib::Request&, httplib::Response& res, const api_context& ctx) {
     write_json_text(res, ctx.config.get_raw());
 }
 
-void handle_put_config(const httplib::Request& req, httplib::Response& res, api_context& ctx) {
+void handle_put_config(const httplib::Request& req, httplib::Response& res, const api_context& ctx) {
     ctx.config.replace_raw(req.body);
     write_json(res, nlohmann::json{{"success", true}});
 }
@@ -25,8 +25,8 @@ void handle_put_config(const httplib::Request& req, httplib::Response& res, api_
 } // namespace
 
 void register_config_handlers(route_registry& r) {
-    r.add({http_method::get,  "/api/config", auth_policy::required, &handle_get_config});
-    r.add({http_method::put,  "/api/config", auth_policy::required, &handle_put_config});
+    r.add({http_method::get,  "/api/config", &handle_get_config});
+    r.add({http_method::put,  "/api/config", &handle_put_config});
 }
 
 } // namespace clew

@@ -1,6 +1,6 @@
 #pragma once
 
-// Shared helpers used by transport/handlers/*. Keeps handlers thin:
+// Shared helpers used by transport/handlers. Keeps handlers thin:
 //   parse_json_body / parse_match_u32  — input decoding (throw api_exception
 //                                        on bad input)
 //   write_json / write_json_text        — 200 + application/json content-type

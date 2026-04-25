@@ -19,8 +19,6 @@ enum class api_error {
     not_found,
     invalid_argument,
     conflict,
-    auth_failed,
-    forbidden,
     unsupported,
     io_error,
     internal,

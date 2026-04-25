@@ -153,7 +153,7 @@ private:
 
     static std::string find_exe_path(std::string_view exe_name) {
         // Convert name to wide (use explicit length; string_view is not null-terminated)
-        const int src_len = static_cast<int>(exe_name.size());
+        const auto src_len = static_cast<int>(exe_name.size());
         int wlen = MultiByteToWideChar(CP_UTF8, 0, exe_name.data(), src_len, nullptr, 0);
         if (wlen <= 0) return {};
         std::wstring wname(wlen, L'\0');
@@ -182,7 +182,7 @@ private:
     // Extract icon from exe path, convert to PNG bytes
     std::vector<uint8_t> extract_icon_png(std::string_view exe_path) {
         // Convert to wide (explicit length; string_view is not null-terminated)
-        const int src_len = static_cast<int>(exe_path.size());
+        const auto src_len = static_cast<int>(exe_path.size());
         int wlen = MultiByteToWideChar(CP_UTF8, 0, exe_path.data(), src_len, nullptr, 0);
         if (wlen <= 0) return {};
         std::wstring wpath(wlen, L'\0');

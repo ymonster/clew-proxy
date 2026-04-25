@@ -30,9 +30,9 @@ nlohmann::json shell_service::browse_exe() {
     }
 
     std::string full(file_path);
-    std::string dir, name;
-    auto last_sep = full.find_last_of("\\/");
-    if (last_sep != std::string::npos) {
+    std::string dir;
+    std::string name;
+    if (auto last_sep = full.find_last_of("\\/"); last_sep != std::string::npos) {
         dir  = full.substr(0, last_sep + 1);
         name = full.substr(last_sep + 1);
     } else {

@@ -4,7 +4,7 @@ Clew end-to-end test harness.
 Runs tests/e2e_api_test.py with the full lifecycle handled automatically:
   - admin sanity check
   - launch build/Release/clew.exe (if not already running)
-  - wait for /api/bootstrap to become ready
+  - wait for /api/stats to become ready
   - invoke the e2e test module as a subprocess
   - restore clew.json if modified during the run
   - taskkill the spawned clew.exe on the way out
@@ -37,7 +37,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 EXE = REPO_ROOT / "build" / "Release" / "clew.exe"
 CONFIG = REPO_ROOT / "clew.json"
 CONFIG_BACKUP = REPO_ROOT / "clew.json.bak-e2e"
-BOOTSTRAP_URL = "http://127.0.0.1:18080/api/bootstrap"
+READY_URL = "http://127.0.0.1:18080/api/stats"
 READY_TIMEOUT_S = 30.0
 
 
@@ -50,7 +50,7 @@ def is_elevated() -> bool:
 
 def is_clew_up() -> bool:
     try:
-        r = requests.get(BOOTSTRAP_URL, timeout=1.5)
+        r = requests.get(READY_URL, timeout=1.5)
         return r.status_code == 200
     except Exception:
         return False
@@ -114,7 +114,7 @@ def main() -> int:
         else:
             if not EXE.exists():
                 print(f"ERROR: {EXE} not found. Build first:", file=sys.stderr)
-                print(f"       cmake --build build --config Release --target clew",
+                print("       cmake --build build --config Release --target clew",
                       file=sys.stderr)
                 return 1
             print(f"Launching {EXE} ...")

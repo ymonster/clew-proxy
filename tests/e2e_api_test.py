@@ -8,11 +8,15 @@ Usage:
     python e2e_api_test.py
 """
 
+import queue
 import requests
 import subprocess
+import sys
+import threading
 import time
 import json
-import sys
+from contextlib import contextmanager
+from typing import Iterator
 
 BASE = "http://127.0.0.1:18080/api"
 PROXY_HOST = "127.0.0.1"
@@ -53,12 +57,11 @@ def test(name):
 
 @test("API is reachable")
 def test_api_reachable():
-    # /api/proxy/status was removed in the three-layer refactor (engine is
-    # always-on). Use the always-public /api/bootstrap as the liveness probe.
-    r = requests.get(f"{BASE}/bootstrap", timeout=3)
+    # Engine is always-on (no /api/proxy/status); use /api/stats as a liveness probe.
+    r = requests.get(f"{BASE}/stats", timeout=3)
     assert r.status_code == 200
     data = r.json()
-    assert "auth_enabled" in data, f"Unexpected bootstrap payload: {data}"
+    assert isinstance(data, dict), f"Unexpected stats payload: {data}"
 
 
 @test("Process tree is populated")
@@ -251,9 +254,13 @@ def test_proxy_routing():
 
 @test("Manual hijack and unhijack a PID")
 def test_manual_hijack():
-    # Find a running process to test with (use our own PID as safe target)
+    # Use our own PID as a safe target. Since this script was launched after
+    # clew's initial NtQuery snapshot, our PID enters the tree only via ETW
+    # ProcessStart, which has buffer-flush latency (~hundreds of ms).
     import os
     test_pid = os.getpid()
+    assert _wait_pid_in_tree(test_pid), \
+        f"PID {test_pid} did not appear in tree within timeout (ETW lag?)"
 
     # Hijack
     r = requests.post(f"{BASE}/hijack/{test_pid}", json={"tree": False, "group_id": 0})
@@ -286,81 +293,116 @@ def test_manual_hijack():
 # didn't exercise: batch-notify H5 correctness, config_store observer chain,
 # proxy group full CRUD including conflict + migrate + test endpoint.
 
+# ---------- SSE / process-tree helpers shared by T14+ ----------
+
+RESERVED_PIDS = frozenset({0, 4})  # System Idle, System
+
+
+def _is_event_line(line):
+    return bool(line) and line.startswith("event:")
+
+
+def _sse_reader(url, q, stop):
+    """Push every `event: <name>` value from an SSE stream into q until stopped."""
+    try:
+        with requests.get(url, stream=True, timeout=30) as r:
+            for line in r.iter_lines(decode_unicode=True):
+                if stop.is_set():
+                    return
+                if _is_event_line(line):
+                    q.put(line.removeprefix("event:").strip())
+    except Exception:
+        pass  # connection torn down on stop — expected
+
+
+@contextmanager
+def _sse_subscription(url, settle=0.3):
+    """Yield a queue of SSE event names; reader thread is stopped on exit."""
+    q = queue.Queue()
+    stop = threading.Event()
+    t = threading.Thread(target=_sse_reader, args=(url, q, stop), daemon=True)
+    t.start()
+    time.sleep(settle)
+    try:
+        yield q
+    finally:
+        stop.set()
+
+
+def _drain(q):
+    """Discard everything currently buffered. Non-blocking."""
+    try:
+        while True:
+            q.get_nowait()
+    except queue.Empty:
+        return
+
+
+def _count(q, name):
+    """Count buffered events equal to `name`. Non-blocking."""
+    n = 0
+    try:
+        while True:
+            if q.get_nowait() == name:
+                n += 1
+    except queue.Empty:
+        return n
+
+
+def _iter_pids(nodes) -> Iterator[int]:
+    """Flatten a process tree into a stream of pids."""
+    for node in nodes:
+        yield node["pid"]
+        yield from _iter_pids(node.get("children", []))
+
+
+def _wait_pid_in_tree(pid, timeout=3.0):
+    """Poll /api/processes until pid shows up. Tolerates ETW ProcessStart
+    buffer flush latency (~hundreds of ms) for processes spawned after the
+    initial NtQuery snapshot."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        tree = requests.get(f"{BASE}/processes").json()
+        if pid in _iter_pids(tree):
+            return True
+        time.sleep(0.1)
+    return False
+
+
 @test("Batch hijack emits exactly one SSE process_update (H5)")
 def test_batch_hijack_single_notify():
     """DESIGN H5: manager.batch_hijack applies every add/remove then fires
-    notify_tree_changed exactly once, not N times. We verify by subscribing
-    to /api/events, posting a batch, and counting process_update frames in
-    the short window after the response."""
-    import threading, queue
+    notify_tree_changed exactly once, not N times."""
+    with _sse_subscription(f"{BASE}/events") as q:
+        _drain(q)  # drop any periodic-refresh noise from the settle window
 
-    q = queue.Queue()
-    reader_done = threading.Event()
+        tree = requests.get(f"{BASE}/processes").json()
+        test_pids = [p for p in _iter_pids(tree) if p not in RESERVED_PIDS][:5]
+        assert len(test_pids) >= 3, f"Need >=3 pids to batch, got {len(test_pids)}"
 
-    def reader():
-        try:
-            with requests.get(f"{BASE}/events", stream=True, timeout=30) as r:
-                for line in r.iter_lines(decode_unicode=True):
-                    if reader_done.is_set():
-                        return
-                    if line and line.startswith("event:"):
-                        q.put(line[len("event:"):].strip())
-        except Exception:
-            pass
+        r = requests.post(f"{BASE}/hijack/batch", json={
+            "pids": test_pids, "action": "hijack", "group_id": 0,
+        })
+        assert r.status_code == 200, f"batch hijack failed: {r.status_code} {r.text}"
 
-    t = threading.Thread(target=reader, daemon=True)
-    t.start()
-    time.sleep(0.3)  # let SSE connection establish (short — fewer stray ETW events)
+        # Short collection window: long enough for the single batch frame,
+        # short enough that background ETW ProcessStart/Stop rarely slip in.
+        time.sleep(0.4)
+        process_updates = _count(q, "process_update")
 
-    # Drain any initial events (e.g. periodic refresh)
-    while not q.empty():
-        try: q.get_nowait()
-        except queue.Empty: break
+        # Cleanup inside the subscription so the reader is still alive if we
+        # ever want to assert on the unhijack frame too.
+        requests.post(f"{BASE}/hijack/batch", json={
+            "pids": test_pids, "action": "unhijack", "group_id": 0,
+        })
+        time.sleep(0.2)
 
-    # Pick a handful of real PIDs from the tree (skip 0/4 which are reserved)
-    tree = requests.get(f"{BASE}/processes").json()
-    pids = []
-    def walk(nodes):
-        for n in nodes:
-            pids.append(n["pid"])
-            walk(n.get("children", []))
-    walk(tree)
-    test_pids = [p for p in pids if p not in (0, 4)][:5]
-    assert len(test_pids) >= 3, f"Need >=3 pids to batch, got {len(test_pids)}"
-
-    # Issue batch hijack
-    r = requests.post(f"{BASE}/hijack/batch", json={
-        "pids": test_pids, "action": "hijack", "group_id": 0,
-    })
-    assert r.status_code == 200, f"batch hijack failed: {r.status_code} {r.text}"
-
-    # Short collection window: long enough for the single batch frame,
-    # short enough that background ETW ProcessStart/Stop rarely slip in.
-    time.sleep(0.4)
-
-    process_updates = 0
-    while True:
-        try:
-            ev = q.get_nowait()
-            if ev == "process_update":
-                process_updates += 1
-        except queue.Empty:
-            break
-
-    # Cleanup: unhijack the same pids
-    requests.post(f"{BASE}/hijack/batch", json={
-        "pids": test_pids, "action": "unhijack", "group_id": 0,
-    })
-    time.sleep(0.2)
-    reader_done.set()
-
-    # Ideal value is 1. We allow up to 2 to tolerate a stray ETW event
-    # that lands inside the short window on busy machines. The legacy
-    # (pre-H5) code path emitted one process_update per pid (~N),
-    # so the bound still catches regressions cleanly.
-    assert process_updates <= 2, \
-        f"expected <=2 process_update events after batch (ideal 1), got {process_updates} " \
-        f"(legacy behavior emitted ~{len(test_pids)})"
+    # Ideal value is 1. Allow 2 to tolerate one stray ETW event on busy machines.
+    # Legacy (pre-H5) emitted one process_update per pid (~N).
+    assert process_updates <= 2, (
+        f"expected <=2 process_update events after batch (ideal 1), "
+        f"got {process_updates} (legacy behavior emitted ~{len(test_pids)})"
+    )
 
 
 @test("PUT /api/config triggers auto rule reload (observer chain)")

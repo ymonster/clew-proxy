@@ -3,7 +3,7 @@
 //   domain (strand_bound + process_tree_manager + config_store)
 //     ^
 //     |
-//   application services (9) + auth_middleware
+//   application services (8)
 //     ^
 //     |
 //   transport (sse_hub + projection + bridge + http_api_server)
@@ -27,6 +27,9 @@
 #include <utility>
 #include <vector>
 
+#include "common/debug_console_session.hpp"
+#include "common/single_instance_guard.hpp"
+#include "common/winsock_session.hpp"
 #include "core/log.hpp"
 #include "core/scoped_exit.hpp"
 #include "core/version.hpp"
@@ -43,14 +46,13 @@
 
 // Transport + projection + bridge + SSE
 #include "common/api_context.hpp"
+#include "common/api_exception.hpp"
 #include "projection/config_sse_bridge.hpp"
 #include "projection/process_projection.hpp"
 #include "transport/http_api_server.hpp"
 #include "transport/sse_hub.hpp"
 
 // Application services + middleware
-#include "auth/auth_middleware.hpp"
-#include "services/auth_service.hpp"
 #include "services/config_service.hpp"
 #include "services/connection_service.hpp"
 #include "services/group_service.hpp"
@@ -98,8 +100,7 @@ static bool is_elevated() {
     clew::unique_handle token(raw_token);
 
     TOKEN_ELEVATION elevation;
-    DWORD size = 0;
-    if (!GetTokenInformation(token.get(), TokenElevation, &elevation, sizeof(elevation), &size))
+    if (DWORD size = 0; !GetTokenInformation(token.get(), TokenElevation, &elevation, sizeof(elevation), &size))
         return false;
     return elevation.TokenIsElevated == TRUE;
 }
@@ -132,47 +133,7 @@ static cli_options parse_args(int argc, char* argv[]) {
     return opts;
 }
 
-static constexpr const wchar_t* CLEW_MUTEX_NAME = L"Global\\Clew_SingleInstance";
-static constexpr const wchar_t* CLEW_WINDOW_CLASS = L"ClewWebViewClass";
-
-#ifdef CLEW_HAS_WEBVIEW2
-int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int) {
-    int argc = __argc;
-    char** argv = __argv;
-    (void)lpCmdLine;
-    cli_options opts = parse_args(argc, argv);
-
-    clew::unique_handle mutex(CreateMutexW(nullptr, TRUE, CLEW_MUTEX_NAME));
-    if (GetLastError() == ERROR_ALREADY_EXISTS) {
-        HWND existing = FindWindowW(CLEW_WINDOW_CLASS, nullptr);
-        if (existing) {
-            ShowWindow(existing, SW_SHOW);
-            ShowWindow(existing, SW_RESTORE);
-            SetForegroundWindow(existing);
-        }
-        return 0;
-    }
-
-#ifndef NDEBUG
-    AllocConsole();
-    FILE* fp_out = nullptr;
-    FILE* fp_err = nullptr;
-    freopen_s(&fp_out, "CONOUT$", "w", stdout);
-    freopen_s(&fp_err, "CONOUT$", "w", stderr);
-#endif
-    opts.gui_mode = true;
-#else
-int main(int argc, char* argv[]) {
-    cli_options opts = parse_args(argc, argv);
-    HINSTANCE hInstance = GetModuleHandle(nullptr);
-    clew::unique_handle mutex;
-#endif
-
-    if (opts.help) { print_usage(); return 0; }
-
-    // ============================================================
-    // Logging (quill)
-    // ============================================================
+static void setup_logger() {
     quill::Backend::start();
 
     auto file_sink = quill::Frontend::create_or_get_sink<quill::RotatingFileSink>(
@@ -185,20 +146,108 @@ int main(int argc, char* argv[]) {
             return cfg;
         }());
 
+    quill::PatternFormatterOptions pattern{
+        "%(time) [%(log_level_short_code)] %(message)",
+        "%Y-%m-%d %H:%M:%S.%Qus"};
+
 #ifndef NDEBUG
     auto console_sink = quill::Frontend::create_or_get_sink<quill::ConsoleSink>("console");
     clew::g_logger = quill::Frontend::create_or_get_logger(
-        "clew", {std::move(file_sink), std::move(console_sink)},
-        quill::PatternFormatterOptions{
-            "%(time) [%(log_level_short_code)] %(message)",
-            "%Y-%m-%d %H:%M:%S.%Qus"});
+        "clew", {std::move(file_sink), std::move(console_sink)}, pattern);
 #else
     clew::g_logger = quill::Frontend::create_or_get_logger(
-        "clew", std::move(file_sink),
-        quill::PatternFormatterOptions{
-            "%(time) [%(log_level_short_code)] %(message)",
-            "%Y-%m-%d %H:%M:%S.%Qus"});
+        "clew", std::move(file_sink), pattern);
 #endif
+}
+
+static std::unique_ptr<clew::webview_app> setup_gui(
+    const cli_options& opts,
+    clew::config_manager& config,
+    HINSTANCE hInstance,
+    int api_port) {
+    if (!opts.gui_mode) return nullptr;
+
+    PC_LOG_INFO("Launching WebView2 GUI...");
+    if (!clew::is_webview2_available()) {
+        PC_LOG_WARN("WebView2 not available, falling back to console mode");
+        return nullptr;
+    }
+
+    const auto& ui_cfg = config.get_v2().ui;
+    std::wstring url = std::format(L"http://127.0.0.1:{}/", api_port);
+    auto gui = std::make_unique<clew::webview_app>(url, ui_cfg.window_width, ui_cfg.window_height);
+    gui->set_title(L"Clew");
+    gui->set_initial_rect(ui_cfg.window_x, ui_cfg.window_y,
+                           ui_cfg.window_width, ui_cfg.window_height);
+    gui->set_close_to_tray(ui_cfg.close_to_tray);
+#ifdef NDEBUG
+    gui->set_devtools_enabled(false);
+#endif
+    gui->set_on_move_resize([&config](int x, int y, int w, int h) {
+        auto& ui = config.get_v2().ui;
+        ui.window_x = x; ui.window_y = y;
+        ui.window_width = w; ui.window_height = h;
+        config.save();
+    });
+
+    if (!gui->create(hInstance)) {
+        PC_LOG_ERROR("WebView2 window creation failed");
+        return nullptr;
+    }
+    return gui;
+}
+
+static void wait_for_tree_init(
+    clew::domain::process_tree_manager& tree_mgr,
+    bool gui_alive,
+    bool& init_interrupted) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (!tree_mgr.is_initialized() && !init_interrupted &&
+           std::chrono::steady_clock::now() < deadline) {
+        if (gui_alive && !pump_pending_messages()) {
+            init_interrupted = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    if (!tree_mgr.is_initialized() && !init_interrupted) {
+        PC_LOG_ERROR("Tree initialization timeout");
+    }
+}
+
+static constexpr const wchar_t* CLEW_MUTEX_NAME = L"Global\\Clew_SingleInstance";
+static constexpr const wchar_t* CLEW_WINDOW_CLASS = L"ClewWebViewClass";
+
+#ifdef CLEW_HAS_WEBVIEW2
+int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int) {
+    int argc = __argc;
+    char** argv = __argv;
+    (void)lpCmdLine;
+    cli_options opts = parse_args(argc, argv);
+
+    clew::single_instance_guard instance{CLEW_MUTEX_NAME};
+    if (instance.already_running()) {
+        instance.activate_existing(CLEW_WINDOW_CLASS);
+        return 0;
+    }
+
+#ifndef NDEBUG
+    clew::debug_console_session console;
+#endif
+    opts.gui_mode = true;
+#else
+int main(int argc, char* argv[]) {
+    cli_options opts = parse_args(argc, argv);
+    HINSTANCE hInstance = GetModuleHandle(nullptr);
+    clew::single_instance_guard instance{CLEW_MUTEX_NAME};
+#endif
+
+    if (opts.help) { print_usage(); return 0; }
+
+    // ============================================================
+    // Logging (quill) + elevation check + Winsock
+    // ============================================================
+    setup_logger();
 
     PC_LOG_INFO("=== Clew {} (three-layer refactor) ===", CLEW_VERSION);
 
@@ -208,8 +257,8 @@ int main(int argc, char* argv[]) {
     }
     PC_LOG_INFO("Running with administrator privileges");
 
-    WSADATA wsaData;
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+    clew::winsock_session winsock;
+    if (!winsock.ok()) {
         PC_LOG_ERROR("Failed to initialize Winsock");
         return 1;
     }
@@ -308,9 +357,8 @@ int main(int argc, char* argv[]) {
     tree_mgr.add_listener(&projection);
 
     // ============================================================
-    // 6. Application services (9)
+    // 6. Application services (8)
     // ============================================================
-    clew::auth_service         auth_svc(cfg_store);
     clew::config_service       config_svc(cfg_store);
     clew::connection_service   connection_svc(exec, udp_port_tracker.get());
     clew::group_service        group_svc(exec, cfg_store);
@@ -321,10 +369,7 @@ int main(int argc, char* argv[]) {
     clew::shell_service        shell_svc;
     clew::stats_service        stats_svc(exec);
 
-    clew::auth_middleware auth_mw(cfg_store);
-
     clew::api_context ctx{
-        .auth        = auth_svc,
         .config      = config_svc,
         .connections = connection_svc,
         .groups      = group_svc,
@@ -352,8 +397,8 @@ int main(int argc, char* argv[]) {
                 exec.command([rules = cfg.auto_rules](clew::domain::process_tree_manager& m) {
                     m.apply_auto_rules_from_config(rules);
                 });
-            } catch (const std::exception& e) {
-                PC_LOG_WARN("[config-sync] rule reload failed: {}", e.what());
+            } catch (const clew::api_exception& e) {
+                PC_LOG_WARN("[config-sync] rule reload failed: {}", e.message());
             }
 
             sync_groups();
@@ -367,14 +412,13 @@ int main(int argc, char* argv[]) {
     // 8. HTTP API server (transport layer)
     // ============================================================
     constexpr int API_PORT = 18080;
-    clew::transport::http_api_server api_server(API_PORT, ctx, auth_mw, opts.static_dir);
+    clew::transport::http_api_server api_server(API_PORT, ctx, opts.static_dir);
 
     // ============================================================
     // Start services
     // ============================================================
     if (!api_server.start()) {
         PC_LOG_ERROR("Failed to start HTTP API server");
-        WSACleanup();
         return 1;
     }
     PC_LOG_INFO("HTTP API: http://127.0.0.1:{}/", API_PORT);
@@ -394,52 +438,10 @@ int main(int argc, char* argv[]) {
     // ============================================================
     // GUI (WebView2)
     // ============================================================
-    std::unique_ptr<clew::webview_app> gui;
-    bool gui_created = false;
-    if (opts.gui_mode) {
-        PC_LOG_INFO("Launching WebView2 GUI...");
-        if (clew::is_webview2_available()) {
-            const auto& ui_cfg = config.get_v2().ui;
-            std::wstring url = std::format(L"http://127.0.0.1:{}/", API_PORT);
-            gui = std::make_unique<clew::webview_app>(url, ui_cfg.window_width, ui_cfg.window_height);
-            gui->set_title(L"Clew");
-            gui->set_initial_rect(ui_cfg.window_x, ui_cfg.window_y,
-                                   ui_cfg.window_width, ui_cfg.window_height);
-            gui->set_close_to_tray(ui_cfg.close_to_tray);
-#ifdef NDEBUG
-            gui->set_devtools_enabled(false);
-#endif
-            gui->set_on_move_resize([&config](int x, int y, int w, int h) {
-                auto& ui = config.get_v2().ui;
-                ui.window_x = x; ui.window_y = y;
-                ui.window_width = w; ui.window_height = h;
-                config.save();
-            });
-            gui_created = gui->create(hInstance);
-            if (!gui_created) {
-                PC_LOG_ERROR("WebView2 window creation failed");
-                gui.reset();
-            }
-        } else {
-            PC_LOG_WARN("WebView2 not available, falling back to console mode");
-        }
-    }
+    auto gui = setup_gui(opts, config, hInstance, API_PORT);
 
     // Wait for tree initialization before opening WinDivert
-    {
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
-        while (!tree_mgr.is_initialized() && !init_interrupted &&
-               std::chrono::steady_clock::now() < deadline) {
-            if (gui_created && !pump_pending_messages()) {
-                init_interrupted = true;
-                break;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
-        if (!tree_mgr.is_initialized() && !init_interrupted) {
-            PC_LOG_ERROR("Tree initialization timeout");
-        }
-    }
+    wait_for_tree_init(tree_mgr, gui != nullptr, init_interrupted);
 
     if (tree_mgr.is_initialized()) {
         // Initial auto-rule scan + notify. apply_auto_rules_from_config
@@ -490,7 +492,7 @@ int main(int argc, char* argv[]) {
     // ============================================================
     // Main loop (WM message pump or idle park)
     // ============================================================
-    if (gui_created) {
+    if (gui) {
         gui->run();
     } else {
         PC_LOG_ERROR("GUI creation failed — this build requires WebView2.");
@@ -525,7 +527,6 @@ int main(int argc, char* argv[]) {
     sse.stop();
 
     icons.shutdown();
-    WSACleanup();
     quill::Backend::stop();
     PC_LOG_INFO("Goodbye!");
 

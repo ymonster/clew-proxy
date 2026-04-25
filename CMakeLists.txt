@@ -89,8 +89,6 @@ set(CLEW_SOURCES
     src/common/api_exception.cpp
     src/config/config_store.cpp
     src/domain/process_tree_manager.cpp
-    src/auth/auth_middleware.cpp
-    src/services/auth_service.cpp
     src/services/config_service.cpp
     src/services/connection_service.cpp
     src/services/group_service.cpp
@@ -106,7 +104,6 @@ set(CLEW_SOURCES
     src/transport/middleware.cpp
     src/transport/route_registry.cpp
     src/transport/http_api_server.cpp
-    src/transport/handlers/auth_handlers.cpp
     src/transport/handlers/config_handlers.cpp
     src/transport/handlers/connection_handlers.cpp
     src/transport/handlers/group_handlers.cpp

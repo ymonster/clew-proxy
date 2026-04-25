@@ -21,15 +21,13 @@
 
 namespace clew {
 struct api_context;
-class auth_middleware;
 }  // namespace clew
 
 namespace clew::transport {
 
 class http_api_server {
 public:
-    http_api_server(int port, api_context& ctx, auth_middleware& mw,
-                    std::string static_dir);
+    http_api_server(int port, api_context& ctx, std::string static_dir);
     ~http_api_server();
 
     http_api_server(const http_api_server&)            = delete;
@@ -47,7 +45,6 @@ private:
     int                 port_;
     std::string         static_dir_;
     api_context&        ctx_;
-    auth_middleware&    mw_;
     httplib::Server     server_;
     std::jthread        server_thread_;
     std::atomic<bool>   running_{false};

@@ -51,10 +51,8 @@ src/
     process_tree_manager.hpp - Orchestrator: ETW + NtQuery + Flat Tree + Rule Engine
     tcp_table.hpp / udp_table.hpp - OS connection table queries (API consumers)
   config/
-    types.hpp              - All data types: AutoRule, ProxyGroup, DnsConfig, ConfigV2, ApiAuth
+    types.hpp              - All data types: AutoRule, ProxyGroup, DnsConfig, ConfigV2
     config_manager.hpp     - JSON config persistence (clew.json)
-  stats/
-    connection_stats.hpp   - Connection statistics
   ui/
     webview_app.hpp        - Frameless WebView2 host + system tray
 
@@ -154,17 +152,9 @@ Find matching process → traverse to tree root (parent not matching same name) 
   - **Crash recovery**: on startup, if `dns_state.json` exists it means the previous session exited abnormally — restore system DNS from file, then delete it
 - Limitation: forwarder is UDP-only. Chromium TCP:53 fallback is not handled (not needed in practice when UDP works).
 
-### API token auth (optional, off by default)
-
-- `ConfigV2.auth = { enabled: bool, token: string }`, default disabled
-- When enabled, pre-routing handler checks `Authorization: Bearer <token>` for `/api/*` routes
-- SSE accepts `?token=<token>` as a query-param fallback (EventSource can't set custom headers)
-- `GET /api/bootstrap` is always unauthed, lets the frontend discover auth state on init
-
 ## API Endpoints
 
 ```
-GET    /api/bootstrap              - Auth discovery; returns { auth_enabled: bool }
 GET    /api/processes              - Process tree (JSON snapshot from strand)
 GET    /api/processes/:pid         - Single process info
 GET    /api/processes/:pid/detail  - Process detail (cmdline, path)

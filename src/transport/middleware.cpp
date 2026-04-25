@@ -12,7 +12,7 @@ void install_default_headers(httplib::Server& server) {
     server.set_post_routing_handler([](const httplib::Request& req, httplib::Response& res) {
         res.set_header("Access-Control-Allow-Origin",  "*");
         res.set_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-        res.set_header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+        res.set_header("Access-Control-Allow-Headers", "Content-Type");
 
         std::string_view path = req.path;
         if (path.starts_with("/api/")) {

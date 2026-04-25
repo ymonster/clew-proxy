@@ -99,30 +99,6 @@ Some apps (Spotify, certain geo-sensitive services) are picky about DNS resoluti
 - DNS queries go through SOCKS5 to the upstream resolver (default `8.8.8.8`).
 - On disable / exit the system DNS is auto-restored; if the process is force-killed, the next launch detects leftover state and restores it.
 
-### 5. API Token (optional)
-
-The backend HTTP API listens on `127.0.0.1:18080` without auth by default. If you're worried about other local processes accidentally calling state-mutating endpoints (e.g. hijack, config changes), turn auth on:
-
-Edit `clew.json`:
-
-```json
-"auth": {
-  "enabled": true,
-  "token": "<your-random-string>"
-}
-```
-
-One way to generate a token:
-
-```bash
-python -c "import secrets; print(secrets.token_hex(24))"
-```
-
-Once enabled:
-
-- The WebView2 UI asks for the token on first load, then remembers it in `localStorage`.
-- curl / scripts attach `Authorization: Bearer <token>`; SSE can't carry custom headers, so use the query parameter `?token=<token>`.
-
 ## Technical choices
 
 ### Third-party libraries
