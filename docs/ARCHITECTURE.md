@@ -4,7 +4,7 @@ Contributor-facing technical overview. For the end-user intro see [README.md](..
 
 ## Tech Stack
 
-- **Language**: C++23 (`std::expected`, C++20 coroutines for relay)
+- **Language**: C++23 (concepts, C++20 coroutines for relay, `using enum`, fold expressions)
 - **Build**: CMake + vcpkg
 - **Core deps**: WinDivert (kernel traffic intercept), WebView2 (embedded browser UI)
 - **Backend libs** (vcpkg): `quill` (logging), `nlohmann-json`, `cpp-httplib`, `asio` (standalone)
@@ -15,53 +15,98 @@ Contributor-facing technical overview. For the end-user intro see [README.md](..
 
 ## Project Structure
 
+The codebase is organized as a four-layer architecture: **domain** → **application services** → **transport**, with a **projection** layer materializing strand state for HTTP / SSE consumers. `clew::app` (`src/app.{hpp,cpp}`) is the single owner of the runtime object graph; `main.cpp` is the thin entry adapter (parse args, RAII guards for single-instance / debug console / Winsock, then construct + run the app).
+
 ```
 src/
-  core/
-    log.hpp                - quill wrapper, PC_LOG_* macros + runtime set_log_level
-    port_tracker.hpp       - PortTracker: atomic array[65536] mapping local port -> {pid, group_id}
-    windivert_socket.hpp   - TCP SOCKET SNIFF layer: intercepts connect(), writes PortTracker
-    windivert_network.hpp  - TCP NETWORK reflection layer: reads PortTracker, redirects to acceptor
-    dns_forwarder.hpp      - UDP DNS listener, forwards via SOCKS5 UDP ASSOCIATE to upstream
-    dns_manager.hpp        - Orchestrates dns_forwarder lifecycle + system DNS state
-    system_dns.hpp         - Windows DNS API (SetInterfaceDnsSettings) + dns_state.json persistence
-  rules/
-    rule_engine_v3.hpp     - Strand-internal rule engine: flat_tree flag-based, no mutex
-    traffic_filter.hpp     - CIDR/port filter matching
-  proxy/
-    acceptor.hpp           - Asio TCP acceptor: spawns relay coroutines
-    relay.hpp              - C++20 coroutine relay: bidirectional async pipe + SOCKS5 handshake
-    socks5_async.hpp       - Async SOCKS5 handshake coroutine
-  udp/
-    windivert_socket_udp.hpp    - UDP SOCKET SNIFF: intercepts bind/connect, writes UdpPortTracker
-    windivert_network_udp.hpp   - UDP NETWORK reflection: reads UdpPortTracker, redirects to relay
-    udp_port_tracker.hpp        - Per-port UDP session tracking
-    udp_session_table.hpp       - UDP session metadata (for response routing)
-    udp_relay.hpp               - UDP relay orchestrator
-    socks5_udp_manager.hpp      - Per-app-port SOCKS5 UDP ASSOCIATE sessions (RFC 1928)
-    socks5_udp_session.hpp      - Single SOCKS5 UDP session
-    socks5_udp_codec.hpp        - SOCKS5 UDP packet encode/decode
-  api/
-    http_api_server.hpp    - REST API + SSE (cpp-httplib, own thread)
-    icon_cache.hpp         - GDI+ icon extraction + PNG cache (supports AUMID for packaged apps)
-  process/
-    flat_tree.hpp          - Flat Tree with LC-RS: O(1) PID lookup, O(subtree) traversal
-    etw_consumer.hpp       - ETW real-time ProcessStart/Stop consumer
-    ntquery_snapshot.hpp   - Initial full process snapshot via NtQuerySystemInformation
-    process_tree_manager.hpp - Orchestrator: ETW + NtQuery + Flat Tree + Rule Engine
-    tcp_table.hpp / udp_table.hpp - OS connection table queries (API consumers)
-  config/
-    types.hpp              - All data types: AutoRule, ProxyGroup, DnsConfig, ConfigV2
-    config_manager.hpp     - JSON config persistence (clew.json)
-  ui/
-    webview_app.hpp        - Frameless WebView2 host + system tray
+  main.cpp                       - thin entry: WinMain/main → run_app() → clew::app
+  app.{hpp,cpp}                  - composition root, owns ~30 subsystem members,
+                                    explicit shutdown order in dtor
 
-frontend/                  - Vue 3 project (built static files served by cpp-httplib at runtime)
+  common/                        - cross-layer utilities
+    api_context.hpp                  - DI aggregate of service refs passed to handlers
+    api_exception.{hpp,cpp}          - api_error enum + api_exception (throwable across layers)
+    json_patch.hpp                   - apply_patch + field_binding template (whitelisted PATCH)
+    process_tree_json.hpp            - shared process-tree → JSON serialization
+    winsock_session.hpp              - RAII WSAStartup / WSACleanup
+    single_instance_guard.hpp        - RAII single-instance mutex
+    debug_console_session.hpp        - RAII AllocConsole / FreeConsole
+
+  config/
+    types.hpp                    - All data types: AutoRule, ProxyGroup, DnsConfig, ConfigV2
+    config_manager.hpp           - JSON config persistence (clew.json)
+    config_change_tag.hpp        - observer dispatch tag enum
+    config_store.{hpp,cpp}       - thin wrapper: mutate(fn, tag) + observer fanout
+
+  domain/                        - strand-bound application kernel
+    strand_bound.hpp                 - concept-constrained query/command template
+    tree_change_receiver.hpp         - listener interface (on_tree_changed / on_process_exit)
+    process_tree_manager.{hpp,cpp}   - owns flat_tree + rule_engine + ETW driver
+
+  services/                      - 8 application services (HTTP-facing logic)
+    config_service / connection_service / group_service / icon_service /
+    process_tree_service / rule_service / shell_service / stats_service
+
+  projection/                    - state holders bridging domain → transport
+    process_projection.{hpp,cpp}     - tree_change_receiver: snapshot + SSE fanout
+    config_sse_bridge.{hpp,cpp}      - config_store observer → SSE auto_rule_changed
+
+  transport/                     - HTTP API server (cpp-httplib)
+    http_api_server.{hpp,cpp}        - cpp-httplib server + 32-worker thread pool
+    middleware.{hpp,cpp}             - CORS / OPTIONS / cache headers (post-routing)
+    route_def.hpp                    - {method, pattern, handler} descriptor + http_method enum
+    route_registry.{hpp,cpp}         - dispatcher: 3-tier exception catch + per-request log
+    response_utils.{hpp,cpp}         - json body helpers (parse_json_body / write_json)
+    sse_events.hpp                   - SSE event-name string constants
+    sse_hub.{hpp,cpp}                - sink registry + broadcast across HTTP workers
+    handlers/                        - 9 thin route modules (one per resource group)
+
+  core/                          - low-level infrastructure
+    log.hpp                          - quill wrapper, PC_LOG_* macros + runtime set_log_level
+    scoped_exit.hpp                  - unique_handle (Win32 HANDLE RAII) + scoped_exit<F>
+    string_hash.hpp                  - transparent string_hash + string_map<V> alias
+    port_tracker.hpp                 - atomic array[65536] mapping local port -> tracker entry
+    windivert_socket.hpp             - TCP SOCKET SNIFF: intercepts connect(), writes PortTracker
+    windivert_network.hpp            - TCP NETWORK reflection: reads PortTracker, redirects
+    dns_forwarder.hpp                - UDP DNS listener, forwards via SOCKS5 UDP ASSOCIATE
+    dns_manager.hpp                  - dns_forwarder lifecycle + system DNS state
+    system_dns.hpp                   - Win32 SetInterfaceDnsSettings + dns_state.json persist
+
+  process/                       - process discovery + tree
+    flat_tree.hpp                    - vector<process_entry> + LC-RS indices, O(1) PID lookup
+    etw_consumer.hpp                 - ETW real-time ProcessStart / ProcessStop consumer
+    ntquery_snapshot.hpp             - Initial full process snapshot via NtQuerySystemInformation
+    tcp_table.hpp / udp_table.hpp    - OS connection table queries
+
+  rules/                         - auto-rule matching + traffic filtering
+    rule_engine_v3.hpp               - flat_tree flag-based engine, no mutex
+    traffic_filter.hpp               - CIDR / port destination filter
+
+  proxy/                         - TCP relay
+    acceptor.hpp                     - Asio TCP acceptor, spawns relay coroutines
+    relay.hpp                        - C++20 coroutine bidirectional pipe + SOCKS5 handshake
+    socks5_async.hpp                 - Async SOCKS5 handshake coroutine
+
+  udp/                           - UDP relay (mirrors TCP, per-app-port sessions)
+    windivert_socket_udp.hpp / windivert_network_udp.hpp
+    udp_port_tracker.hpp / udp_session_table.hpp / udp_relay.hpp
+    socks5_udp_manager.hpp / socks5_udp_session.hpp / socks5_udp_codec.hpp
+
+  api/
+    icon_cache.hpp                   - GDI+ icon extraction + PNG cache (AUMID-aware)
+
+  ui/
+    webview_app.hpp                  - Frameless WebView2 host + tray; WndProc dispatcher
+
+frontend/                            - Vue 3 + TypeScript (built static files served by cpp-httplib)
 tests/
-  test_components.cpp      - Component-level tests (wildcard match, flat_tree, rule_engine, PortTracker, JSON)
-  e2e_api_test.py          - API integration tests against a running clew
+  test_components.cpp                - Component-level unit tests (wildcard, flat_tree, etc.)
+  e2e_api_test.py                    - 21-test integration suite against a running clew
+  run_all.py                         - admin-shell harness: launch + wait-ready + run + teardown
+scripts/
+  verify.sh                          - one-shot: build + 7 layering grep guards + run_all.py
 assets/
-  clew.svg / clew.ico / clew.rc - Embedded Windows icon
+  clew.svg / clew.ico / clew.rc      - Embedded Windows icon
 ```
 
 ## Key Architectural Decisions
@@ -187,7 +232,7 @@ GET    /api/events                 - SSE stream
 
 The engine is always-on while `clew.exe` runs — there is no start/stop control plane. WinDivert layers + acceptor + UDP relay + DNS manager are initialized at startup and torn down on shutdown.
 
-SSE events: `process_update`, `process_exit`, `auto_rule_changed`, `auto_rule_matched`.
+SSE events: `process_update`, `process_exit`, `auto_rule_changed`.
 
 ## Config Schema (`clew.json`)
 
@@ -231,8 +276,7 @@ SSE events: `process_update`, `process_exit`, `auto_rule_changed`, `auto_rule_ma
     "upstream_port": 53,
     "listen_host": "127.0.0.2",
     "listen_port": 53
-  },
-  "auth": { "enabled": false, "token": "" }
+  }
 }
 ```
 
@@ -248,12 +292,7 @@ SSE events: `process_update`, `process_exit`, `auto_rule_changed`, `auto_rule_ma
 ## Build notes
 
 - WinDivert + `SetInterfaceDnsSettings` both require administrator privileges. The UAC manifest is embedded via linker `/MANIFESTUAC:level='requireAdministrator'` (see `CMakeLists.txt`) — double-click triggers UAC prompt automatically.
-- Header-only architecture: single translation unit (`main.cpp` includes all `.hpp`).
+- ~30 translation units after the three-layer refactor (was a single TU in the legacy header-only layout). `CMakeLists.txt` enables `/MP` for parallel compilation; first clean build is noticeably longer than the legacy version, incremental builds are fine.
 - Frontend builds to static files served by cpp-httplib at runtime; dev mode uses Vite's proxy to port 18080.
 - Kill `clew.exe` before rebuilding (MSVC LNK1104 error otherwise).
-
-## Related documents
-
-- [CODE_QUALITY.md](CODE_QUALITY.md) — SonarCloud rule-by-rule decisions,
-  accept-comment templates, and open modernization TODOs
-  (e.g. `string_view` migration, http_api_server per-resource split).
+- `bash scripts/verify.sh` runs build + 7 layering grep guards + the 21-test e2e suite as a single command. Requires an administrator shell (clew.exe needs elevation).

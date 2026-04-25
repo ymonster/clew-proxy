@@ -137,7 +137,9 @@ Rules 标签页
 
 ### 为什么不做自研 WFP kernel driver
 
-技术上更完善（`FWPM_LAYER_ALE_CONNECT_REDIRECT_V4` 直接改 socket 目标、零包操作），但有一个非常关键的问题： Windows 10+ 要求 kernel driver 必须由 Microsoft 签名，走 Partner Center 需要一张 EV code signing 证书（约 300–600 美元 / 年）和 attestation 流程，成本过高。构建
+技术上更完善（`FWPM_LAYER_ALE_CONNECT_REDIRECT_V4` 直接改 socket 目标、零包操作），但有一个非常关键的问题： Windows 10+ 要求 kernel driver 必须由 Microsoft 签名，走 Partner Center 需要一张 EV code signing 证书（约 300–600 美元 / 年）和 attestation 流程，成本过高。
+
+## 构建
 
 ### 构建工具链
 
