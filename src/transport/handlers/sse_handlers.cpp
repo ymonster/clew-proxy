@@ -6,7 +6,7 @@
 // non-writable (client disconnect) or the hub is stopped (server shutdown).
 
 #include <chrono>
-#include <cstring>
+#include <string_view>
 #include <thread>
 
 #include <httplib.h>
@@ -34,14 +34,14 @@ void handle_events(const httplib::Request&, httplib::Response& res, const api_co
             hub.attach(&sink);
 
             // Initial comment flushes headers so clients see the stream open.
-            static constexpr char kHello[] = ":connected\n\n";
-            sink.write(kHello, std::strlen(kHello));
+            static constexpr std::string_view kHello = ":connected\n\n";
+            sink.write(kHello.data(), kHello.size());
 
+            static constexpr std::string_view kPing = ":ping\n\n";
             while (sink.is_writable() && hub.is_running()) {
                 std::this_thread::sleep_for(kKeepAliveInterval);
                 if (!sink.is_writable() || !hub.is_running()) break;
-                static constexpr char kPing[] = ":ping\n\n";
-                sink.write(kPing, std::strlen(kPing));
+                sink.write(kPing.data(), kPing.size());
             }
 
             hub.detach(&sink);

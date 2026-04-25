@@ -74,7 +74,7 @@ void route_registry::add(const route_def& def) {
     // stack object in the server's constructor, so capturing its `this`
     // would leave the adapter lambda dangling for the rest of the server's
     // lifetime.
-    api_context& ctx_ref = ctx_;
+    const api_context& ctx_ref = ctx_;
 
     auto adapter = [handler, &ctx_ref](const httplib::Request& req, httplib::Response& res) {
         dispatch(handler, req, res, ctx_ref);

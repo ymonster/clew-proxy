@@ -174,8 +174,7 @@ private:
         // SessionID and ImageName. Fixed offset unreliable across versions.
         evt.image_name[0] = L'\0';
         for (int off = 36; off < len - 4; off += 2) {
-            wchar_t c = *reinterpret_cast<const wchar_t*>(data + off);
-            if (c != L'\\') continue;
+            if (*reinterpret_cast<const wchar_t*>(data + off) != L'\\') continue;
 
             const wchar_t* img   = reinterpret_cast<const wchar_t*>(data + off);
             const wchar_t* slash = wcsrchr(img, L'\\');

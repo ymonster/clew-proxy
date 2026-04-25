@@ -86,6 +86,7 @@ link_directories(
 # retires it in favour of src/transport/*.
 set(CLEW_SOURCES
     src/main.cpp
+    src/app.cpp
     src/common/api_exception.cpp
     src/config/config_store.cpp
     src/domain/process_tree_manager.cpp

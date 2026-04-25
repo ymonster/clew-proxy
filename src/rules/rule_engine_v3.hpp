@@ -416,7 +416,7 @@ private:
     // semantics in README).
     struct match_kind { bool name = false; bool tree = false; };
 
-    match_kind try_match_one(flat_tree& tree, uint32_t idx, AutoRule& rule) {
+    match_kind try_match_one(flat_tree& tree, uint32_t idx, const AutoRule& rule) {
         const auto& entry = tree.at(idx);
         if (!rule.enabled) return {};
         if (!entry.alive) return {};
