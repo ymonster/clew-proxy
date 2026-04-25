@@ -10,6 +10,7 @@
 // Rule engine sets group_id/flags when processes start or rules change.
 
 #include <string>
+#include <string_view>
 #include <format>
 #include <vector>
 #include <unordered_set>
@@ -27,7 +28,7 @@ namespace clew {
 // Wildcard matching (from v1 rule_engine, case-insensitive)
 // ============================================================
 
-inline bool wildcard_match(const std::string& pattern, const std::string& text,
+inline bool wildcard_match(std::string_view pattern, std::string_view text,
                            bool case_insensitive = true)
 {
     auto to_lower = [](char c) {
@@ -36,7 +37,7 @@ inline bool wildcard_match(const std::string& pattern, const std::string& text,
 
     size_t pi = 0;
     size_t ti = 0;
-    size_t star_pi = std::string::npos;
+    size_t star_pi = std::string_view::npos;
     size_t star_ti = 0;
 
     while (ti < text.size()) {
@@ -48,7 +49,7 @@ inline bool wildcard_match(const std::string& pattern, const std::string& text,
             if (pc == '*') { star_pi = pi++; star_ti = ti; continue; }
             if (pc == tc)  { pi++; ti++; continue; }
         }
-        if (star_pi != std::string::npos) {
+        if (star_pi != std::string_view::npos) {
             pi = star_pi + 1;
             ti = ++star_ti;
             continue;
@@ -66,15 +67,15 @@ inline bool wildcard_match(const std::string& pattern, const std::string& text,
 //   - Glob mode (has * or ?): full wildcard match, order-sensitive
 // ============================================================
 
-inline bool cmdline_match(const std::string& pattern, const std::string& cmdline) {
+inline bool cmdline_match(std::string_view pattern, std::string_view cmdline) {
     // Detect mode: glob if pattern contains * or ?
-    if (pattern.find_first_of("*?") != std::string::npos) {
+    if (pattern.find_first_of("*?") != std::string_view::npos) {
         return wildcard_match(pattern, cmdline);
     }
 
     // Keyword mode: all space-separated fragments must be substrings (case-insensitive)
-    auto to_lower_str = [](const std::string& s) {
-        std::string r = s;
+    auto to_lower_str = [](std::string_view s) {
+        std::string r{s};
         for (auto& c : r) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         return r;
     };
@@ -91,11 +92,11 @@ inline bool cmdline_match(const std::string& pattern, const std::string& cmdline
         // Extract fragment
         size_t end = lower_pattern.find(' ', pos);
         if (end == std::string::npos) end = lower_pattern.size();
-        std::string fragment = lower_pattern.substr(pos, end - pos);
+        std::string_view fragment{lower_pattern.data() + pos, end - pos};
         pos = end;
 
         // Each fragment must appear somewhere in cmdline
-        if (!lower_cmdline.contains(fragment)) return false;
+        if (lower_cmdline.find(fragment) == std::string::npos) return false;
     }
     return true;
 }
@@ -425,7 +426,7 @@ private:
 
         const bool name_match =
             !rule.process_name.empty()
-            && wildcard_match(rule.process_name, std::string{entry.name_u8})
+            && wildcard_match(rule.process_name, entry.name_u8)
             && check_cmdline(tree, idx, rule)
             && check_image_path(tree, idx, rule);
 
