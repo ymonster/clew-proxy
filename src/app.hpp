@@ -14,6 +14,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -42,7 +43,6 @@
 #include "services/icon_service.hpp"
 #include "services/process_tree_service.hpp"
 #include "services/rule_service.hpp"
-#include "services/shell_service.hpp"
 #include "services/stats_service.hpp"
 #include "transport/http_api_server.hpp"
 #include "transport/sse_hub.hpp"
@@ -60,6 +60,13 @@ struct cli_options {
     bool        gui_mode = false;
     bool        help     = false;
     std::string static_dir;
+};
+
+// Thrown by app's ctor / run() when a critical startup step fails
+// (e.g. HTTP server can't bind). Caught by run_app() which logs + exits 1.
+class startup_error : public std::runtime_error {
+public:
+    using std::runtime_error::runtime_error;
 };
 
 class app {
@@ -108,7 +115,7 @@ private:
     domain::process_tree_manager tree_mgr_;
     strand_bound_manager         exec_;
 
-    std::unique_ptr<PortTracker>                      port_tracker_;
+    std::unique_ptr<PortTracker>                      port_tracker_ = std::make_unique<PortTracker>();
     std::unordered_map<uint32_t, ProxyGroupConfig>    tcp_groups_;
     std::unordered_map<uint32_t, UdpProxyGroupConfig> udp_groups_;
     DnsManager                                        dns_mgr_;
@@ -117,7 +124,7 @@ private:
     std::unique_ptr<windivert_socket>                 wd_socket_;
     std::unique_ptr<windivert_network>                wd_network_;
 
-    std::unique_ptr<UdpPortTracker>       udp_port_tracker_;
+    std::unique_ptr<UdpPortTracker>       udp_port_tracker_ = std::make_unique<UdpPortTracker>();
     UdpSessionTable                       udp_session_table_;
     std::unique_ptr<windivert_socket_udp>  wd_socket_udp_;
     std::unique_ptr<windivert_network_udp> wd_network_udp_;
@@ -136,7 +143,6 @@ private:
     icon_service         icon_svc_;
     process_tree_service process_svc_;
     rule_service         rule_svc_;
-    shell_service        shell_svc_;
     stats_service        stats_svc_;
 
     api_context ctx_;

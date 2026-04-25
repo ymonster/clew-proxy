@@ -33,16 +33,12 @@ bool pump_pending_messages() {
 app::app(const cli_options& opts, HINSTANCE hinstance)
     : opts_(opts)
     , hinstance_(hinstance)
-    , config_()
-    , ioc_()
     , strand_(asio::make_strand(ioc_))
     , cfg_store_(config_)
     , tree_mgr_(ioc_, strand_)
     , exec_(tree_mgr_, strand_)
-    , port_tracker_(std::make_unique<PortTracker>())
     , dns_mgr_(ioc_)
     , acceptor_(ioc_, *port_tracker_, strand_, tcp_groups_)
-    , udp_port_tracker_(std::make_unique<UdpPortTracker>())
     , socks5_udp_mgr_(ioc_, udp_groups_)
     , projection_(tree_mgr_, sse_)
     , cfg_bridge_(cfg_store_, sse_)
@@ -60,7 +56,6 @@ app::app(const cli_options& opts, HINSTANCE hinstance)
         .icons       = icon_svc_,
         .processes   = process_svc_,
         .rules       = rule_svc_,
-        .shell       = shell_svc_,
         .stats       = stats_svc_,
         .sse         = sse_,
       }
@@ -187,7 +182,7 @@ std::unique_ptr<webview_app> app::create_gui() {
 
 void app::start_servers_and_workers() {
     if (!api_server_.start()) {
-        throw std::runtime_error("Failed to start HTTP API server");
+        throw startup_error{"Failed to start HTTP API server"};
     }
     PC_LOG_INFO("HTTP API: http://127.0.0.1:{}/", API_PORT);
 

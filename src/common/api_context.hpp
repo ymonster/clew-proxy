@@ -12,10 +12,11 @@ class group_service;
 class icon_service;
 class process_tree_service;
 class rule_service;
-class shell_service;
 class stats_service;
 class sse_hub;
 
+// shell_service is intentionally NOT here — it has only static methods,
+// so handlers call clew::shell_service::method() directly.
 struct api_context {
     config_service&       config;
     connection_service&   connections;
@@ -23,7 +24,6 @@ struct api_context {
     icon_service&         icons;
     process_tree_service& processes;
     rule_service&         rules;
-    shell_service&        shell;
     stats_service&        stats;
     sse_hub&              sse;
 };
