@@ -96,6 +96,10 @@ private:
                                     settings->put_AreDefaultScriptDialogsEnabled(TRUE);
                                     settings->put_IsWebMessageEnabled(TRUE);
                                     settings->put_AreDevToolsEnabled(devtools_enabled_ ? TRUE : FALSE);
+                                    // Kill the default browser context menu (Print / View source /
+                                    // Save image / Reload / etc.) — meaningless in a desktop UI.
+                                    // Ctrl+C/V/X still work; F12 still opens DevTools when enabled.
+                                    settings->put_AreDefaultContextMenusEnabled(FALSE);
 
                                     // Enable non-client region support for CSS app-region: drag
                                     Microsoft::WRL::ComPtr<ICoreWebView2Settings9> settings9;
