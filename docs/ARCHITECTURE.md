@@ -9,13 +9,13 @@ Contributor-facing technical overview. For the end-user intro see [README.md](..
 - **Core deps**: WinDivert (kernel traffic intercept), WebView2 (embedded browser UI)
 - **Backend libs** (vcpkg): `quill` (logging), `nlohmann-json`, `cpp-httplib`, `asio` (standalone)
 - **Frontend**: Vue 3 + TypeScript + shadcn-vue (reka-ui) + Tailwind CSS 4 + AG Grid + Monaco (JSON-only, lazy-loaded)
-- **IPC**: HTTP API + SSE between the C++ backend and the WebView2 frontend
+- **IPC**: HTTP API for CRUD + WebView2 in-process PostMessage for backend → frontend push (replaces the previous SSE channel)
 - **Config**: JSON (`clew.json`)
 - **Target**: Windows 10 2004+ / 11 (requires `SetInterfaceDnsSettings`), administrator privileges
 
 ## Project Structure
 
-The codebase is organized as a four-layer architecture: **domain** → **application services** → **transport**, with a **projection** layer materializing strand state for HTTP / SSE consumers. `clew::app` (`src/app.{hpp,cpp}`) is the single owner of the runtime object graph; `main.cpp` is the thin entry adapter (parse args, RAII guards for single-instance / debug console / Winsock, then construct + run the app).
+The codebase is organized as a four-layer architecture: **domain** → **application services** → **transport**, with a **projection** layer materializing strand state for HTTP responders and the WebView2 push channel. `clew::app` (`src/app.{hpp,cpp}`) is the single owner of the runtime object graph; `main.cpp` is the thin entry adapter (parse args, RAII guards for single-instance / debug console / Winsock, then construct + run the app).
 
 ```
 src/
@@ -47,18 +47,24 @@ src/
     config_service / connection_service / group_service / icon_service /
     process_tree_service / rule_service / shell_service / stats_service
 
-  projection/                    - state holders bridging domain → transport
-    process_projection.{hpp,cpp}     - tree_change_receiver: snapshot + SSE fanout
-    config_sse_bridge.{hpp,cpp}      - config_store observer → SSE auto_rule_changed
+  projection/                    - state holders bridging domain → transport / UI
+    process_projection.{hpp,cpp}     - tree_change_receiver: maintains atomic snapshot
+                                       + pushes through frontend_push_sink with a
+                                       100 ms strand-timer coalesce window for
+                                       push_urgency::batched events
+    config_sse_bridge.{hpp,cpp}      - config_store observer → push auto_rule_changed
+                                       (file name retained for git history; the sink
+                                       is now PostMessage, not SSE)
 
-  transport/                     - HTTP API server (cpp-httplib)
-    http_api_server.{hpp,cpp}        - cpp-httplib server + 32-worker thread pool
+  transport/                     - HTTP API server + push channel interface
+    http_api_server.{hpp,cpp}        - cpp-httplib server + 8-worker thread pool
     middleware.{hpp,cpp}             - CORS / OPTIONS / cache headers (post-routing)
     route_def.hpp                    - {method, pattern, handler} descriptor + http_method enum
     route_registry.{hpp,cpp}         - dispatcher: 3-tier exception catch + per-request log
     response_utils.{hpp,cpp}         - json body helpers (parse_json_body / write_json)
-    sse_events.hpp                   - SSE event-name string constants
-    sse_hub.{hpp,cpp}                - sink registry + broadcast across HTTP workers
+    frontend_push_sink.hpp           - push(event, json_body) interface; the
+                                       projection layer calls it from any thread,
+                                       webview_app marshals onto the UI thread
     handlers/                        - 9 thin route modules (one per resource group)
 
   core/                          - low-level infrastructure
@@ -101,10 +107,16 @@ src/
 frontend/                            - Vue 3 + TypeScript (built static files served by cpp-httplib)
 tests/
   test_components.cpp                - Component-level unit tests (wildcard, flat_tree, etc.)
-  e2e_api_test.py                    - 21-test integration suite against a running clew
+  e2e_api_test.py                    - 19-case HTTP integration suite (requests-based)
   run_all.py                         - admin-shell harness: launch + wait-ready + run + teardown
+  playwright_e2e/
+    poc_attach.py                    - Playwright + WebView2 CDP attach PoC
+    run_pw.py                        - 5-case UI e2e suite: push reception, no SSE leak,
+                                       DELETE roundtrip regression net, no polling
+                                       under ETW load
 scripts/
-  verify.sh                          - one-shot: build + 7 layering grep guards + run_all.py
+  verify.sh                          - one-shot: frontend build + cpp build + 7 layering
+                                       grep guards + HTTP e2e + Playwright e2e
 assets/
   clew.svg / clew.ico / clew.rc      - Embedded Windows icon
 ```
@@ -131,6 +143,70 @@ assets/
 - `flags` field stores hijack state directly on the entry (no separate map)
 - `group_id` field stores proxy group assignment (read by SOCKET layer in hot path)
 - Tombstone + compact: dead entries marked, auto-compacted when tombstones > 20% alive
+
+### Backend → frontend push: WebView2 PostMessage
+
+Replaces the earlier SSE / `EventSource` channel. Push events flow:
+
+1. A domain mutation (ETW process start/stop, manual hijack, rule reload) calls
+   `process_tree_manager::notify_tree_changed(urgency)` on the strand.
+2. `process_projection::on_tree_changed` rebuilds the atomic snapshot.
+   `push_urgency::immediate` flushes right away; `push_urgency::batched` arms
+   a 100 ms strand timer so successive events coalesce into a single push.
+3. Projection calls `frontend_push_sink::push("process_update", json)`.
+4. `webview_app::push` allocates a `push_payload` and posts a custom
+   `WM_PUSH_TO_FRONTEND` to the UI thread, so cross-thread marshalling is
+   explicit across HTTP workers, ETW threads, and the strand.
+5. The UI-thread WndProc takes ownership, builds `{event, data}`, and calls
+   `ICoreWebView2::PostWebMessageAsJson`.
+6. Frontend's `notify.ts` listens on `chrome.webview` `message` events and
+   updates the shared Vue refs (`tree`, etc.); components consume them
+   directly.
+7. Initial sync: when the frontend mounts it posts `{type: 'ready'}` back
+   through `chrome.webview.postMessage`. The host invokes
+   `process_projection::replay_to_frontend` to re-push the latest snapshot.
+
+Why this transport:
+
+- **In-process IPC**: no HTTP socket, no chunked SSE byte stream — V8's main
+  thread is no longer busy parsing the push channel while it is also rendering.
+- **No browser connection-limit interference**: HTTP/1.1 caps per-host
+  connections (Chromium's default is 6); a long-lived SSE stream permanently
+  occupied one of those slots, so bursts of concurrent CRUD calls had one
+  fewer slot available. In-process IPC is independent of that pool entirely.
+- **Simpler shutdown**: a single window message in flight at most, no
+  long-lived HTTP connection to drain.
+
+`/api/processes` (the snapshot endpoint that frontends used to poll) was
+removed because the snapshot now arrives inside every `process_update` push;
+nothing on the frontend needs to fetch the full tree any more. `/api/processes/:pid`
+and `/api/processes/:pid/detail` are kept because they answer single-record
+questions that the push channel does not duplicate.
+
+### Frontend HTTP CRUD: empty `body: ''` on DELETE
+
+This is independent of the push-transport switch above — they were two
+separate problems that happened to ship in the same release.
+
+cpp-httplib (as of v0.31, the version pinned by vcpkg) treats DELETE the same
+as POST/PUT/PATCH: `expect_content()` returns true and the server's
+`read_content_core` enters an `MSG_PEEK` block whenever the request has neither
+`Content-Length` nor chunked `Transfer-Encoding`. With the default 100 MB
+`payload_max_length` and 5 s `read_timeout_sec`, that peek waits the full
+read timeout before the handler is even dispatched — even if the handler
+reads no body. Browser `fetch` DELETE without an explicit body sends no
+`Content-Length`, so an Unhack click stalled for ~5 s server-side before any
+of our code ran.
+
+The fix is on the client side. `frontend/src/api/client.ts` always passes
+`body: ''` for DELETE-shaped CRUD calls (`unhijackProcess`, `deleteAutoRule`,
+`unexcludePid`, `deleteProxyGroup`). The browser then emits
+`Content-Length: 0`, cpp-httplib takes the fast path in `read_content` (length
+0 → return immediately), and the handler runs in <2 ms. The server-side
+alternative (`set_payload_max_length(SIZE_MAX)`) was avoided because it opens
+the server to unbounded payload allocations; a one-line client change is the
+proportional fix. See `memory/lesson_cpp_httplib_delete_5s.md` for the full
+diagnosis trail.
 
 ### WinDivert dual-layer
 
@@ -200,7 +276,6 @@ Find matching process → traverse to tree root (parent not matching same name) 
 ## API Endpoints
 
 ```
-GET    /api/processes              - Process tree (JSON snapshot from strand)
 GET    /api/processes/:pid         - Single process info
 GET    /api/processes/:pid/detail  - Process detail (cmdline, path)
 GET    /api/hijack                 - List all hijacked PIDs
@@ -227,12 +302,16 @@ GET    /api/stats                  - Counts (hijacked_pids, auto_rules_count)
 GET    /api/env                    - Environment info
 POST   /api/shell/browse-exe       - Open file dialog for .exe
 POST   /api/shell/reveal           - Reveal file in Explorer
-GET    /api/events                 - SSE stream
 ```
 
 The engine is always-on while `clew.exe` runs — there is no start/stop control plane. WinDivert layers + acceptor + UDP relay + DNS manager are initialized at startup and torn down on shutdown.
 
-SSE events: `process_update`, `process_exit`, `auto_rule_changed`.
+Push events (delivered via `WM_PUSH_TO_FRONTEND` → `PostWebMessageAsJson`,
+*not* over HTTP — see "Backend → frontend push" above):
+- `process_update` — full process-tree snapshot, after the projection's
+  100 ms coalesce window
+- `auto_rule_changed` — `{action: string}`; tells the frontend to refetch
+  rules-related state
 
 ## Config Schema (`clew.json`)
 
@@ -295,4 +374,4 @@ SSE events: `process_update`, `process_exit`, `auto_rule_changed`.
 - ~30 translation units after the three-layer refactor (was a single TU in the legacy header-only layout). `CMakeLists.txt` enables `/MP` for parallel compilation; first clean build is noticeably longer than the legacy version, incremental builds are fine.
 - Frontend builds to static files served by cpp-httplib at runtime; dev mode uses Vite's proxy to port 18080.
 - Kill `clew.exe` before rebuilding (MSVC LNK1104 error otherwise).
-- `bash scripts/verify.sh` runs build + 7 layering grep guards + the 21-test e2e suite as a single command. Requires an administrator shell (clew.exe needs elevation).
+- `bash scripts/verify.sh` runs frontend build + cpp build + 7 layering grep guards + the HTTP e2e suite (`run_all.py`) + the Playwright + WebView2 e2e suite (`run_pw.py`) as a single command. Requires an administrator shell (clew.exe needs elevation), `npm` for the frontend build, and `uv` for the PEP 723 inline-deps Playwright runner.

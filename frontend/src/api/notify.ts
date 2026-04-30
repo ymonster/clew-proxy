@@ -93,3 +93,12 @@ export function useNotifications() {
     },
   }
 }
+
+// Test bridge for Playwright + CDP. The Vue refs live in module scope and
+// aren't reachable from page.evaluate(); these getters return their current
+// values as plain JSON. Always-on because the WebView2 host is in-process —
+// no user-facing surface to leak.
+;(window as unknown as { __clew_debug: unknown }).__clew_debug = {
+  tree: () => tree.value,
+  connected: () => connected.value,
+}

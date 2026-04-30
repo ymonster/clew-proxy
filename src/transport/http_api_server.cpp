@@ -34,11 +34,12 @@ http_api_server::http_api_server(int port, api_context& ctx, std::string static_
     : port_(port)
     , static_dir_(std::move(static_dir))
     , ctx_(ctx) {
-    // Expand the thread pool beyond httplib's default 8 so long-lived SSE
-    // connections don't starve regular requests.
-    // After SSE was retired the long-lived /api/events provider thread is
-    // gone, so the original 32-worker pool is overkill, but harmless.
-    server_.new_task_queue = [] { return new httplib::ThreadPool(32); };
+    // Thread pool sized for our actual load: 3 polling endpoints
+    // (stats/tcp/udp) + occasional CRUD + icon fetches. Default would
+    // be std::thread::hardware_concurrency(); 8 is a safe fixed cap
+    // that doesn't depend on machine class. The earlier 32 was sized
+    // for SSE long-lived connections, which the project no longer has.
+    server_.new_task_queue = [] { return new httplib::ThreadPool(8); };
 
     install_default_headers(server_);
     install_options_handler(server_);

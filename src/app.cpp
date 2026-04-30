@@ -188,9 +188,7 @@ std::unique_ptr<webview_app> app::create_gui() {
     gui->set_initial_rect(ui_cfg.window_x, ui_cfg.window_y,
                            ui_cfg.window_width, ui_cfg.window_height);
     gui->set_close_to_tray(ui_cfg.close_to_tray);
-#ifdef NDEBUG
-    gui->set_devtools_enabled(false);
-#endif
+    gui->set_devtools_enabled(opts_.devtools);
     gui->set_on_move_resize([this](int x, int y, int w, int h) {
         auto& ui      = config_.get_v2().ui;
         ui.window_x   = x;

@@ -5,8 +5,12 @@ const BASE = '/api'
 const JSON_HEADERS: HeadersInit = { 'Content-Type': 'application/json' }
 
 function mergeHeaders(init?: RequestInit): HeadersInit {
+  // Only attach JSON Content-Type when there is actually a body, since
+  // body-less requests with Content-Type are unusual and have triggered
+  // intermediary issues for us.
+  const hasBody = init?.body != null
   return {
-    ...JSON_HEADERS,
+    ...(hasBody ? JSON_HEADERS : {}),
     ...(init?.headers as Record<string, string> | undefined),
   }
 }
@@ -58,7 +62,9 @@ export function hijackProcess(pid: number, tree = true, groupId = 0): Promise<vo
 
 export function unhijackProcess(pid: number, tree = false): Promise<void> {
   const query = tree ? '?tree=true' : ''
-  return requestVoid(`/hijack/${pid}${query}`, { method: 'DELETE' })
+  // body: '' makes the browser emit Content-Length: 0; cpp-httplib's
+  // DELETE handling otherwise blocks for the full read_timeout (5 s).
+  return requestVoid(`/hijack/${pid}${query}`, { method: 'DELETE', body: '' })
 }
 
 export function getHijackedProcesses(): Promise<ProcessInfo[]> {
@@ -116,7 +122,7 @@ export function updateAutoRule(id: string, rule: Partial<AutoRule>): Promise<Aut
 }
 
 export function deleteAutoRule(id: string): Promise<void> {
-  return requestVoid(`/auto-rules/${id}`, { method: 'DELETE' })
+  return requestVoid(`/auto-rules/${id}`, { method: 'DELETE', body: '' })
 }
 
 export function excludePid(ruleId: string, pid: number): Promise<void> {
@@ -124,7 +130,7 @@ export function excludePid(ruleId: string, pid: number): Promise<void> {
 }
 
 export function unexcludePid(ruleId: string, pid: number): Promise<void> {
-  return requestVoid(`/auto-rules/${ruleId}/exclude/${pid}`, { method: 'DELETE' })
+  return requestVoid(`/auto-rules/${ruleId}/exclude/${pid}`, { method: 'DELETE', body: '' })
 }
 
 // -- Config --
@@ -164,6 +170,7 @@ export async function deleteProxyGroup(id: number): Promise<{ success: boolean }
   const res = await fetch(`${BASE}/proxy-groups/${id}`, {
     method: 'DELETE',
     headers: mergeHeaders(),
+    body: '',
   })
   const text = await res.text()
   const data = text ? JSON.parse(text) : { success: true }

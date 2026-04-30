@@ -24,6 +24,9 @@ The reason I built it: long ago while using Antigravity I hit a wall — with my
 - **Multiple SOCKS5 backends**: configure several proxy groups and route different rules to different groups. Most proxy clients I use already speak SOCKS5, and HTTP proxying is usually handled by those clients themselves — so I didn't need to build HTTP support in.
 - **UDP support**: per-app-port SOCKS5 UDP ASSOCIATE, per RFC 1928.
 - **Built-in DNS forwarder**: when enabled, the system DNS is pointed at Clew's built-in forwarder; queries go through SOCKS5 to upstream. On disable or exit, the system DNS is restored. If the process is force-killed, the next launch detects the leftover state and restores it.
+- **Snappier UI feedback**: in v0.8.1 and earlier, hack / unhack actions could occasionally stall for several seconds. This release fixes two unrelated root causes separately:
+  - **State push moved to WebView2 in-process IPC**: the backend used to push events over HTTP/SSE — the long-lived SSE stream permanently occupied one of the browser's HTTP/1.1 six-connections-per-host slots, and decoding the chunked byte stream parked work on the V8 main thread. Switching the push channel to `PostWebMessageAsJson` takes those costs off the browser network stack and main thread entirely.
+  - **DELETE requests now send an explicit `body: ''`**: cpp-httplib treats every DELETE as "possibly has a body" — without a `Content-Length` header it `peek`s and waits the full `read_timeout` (5 s by default) before dispatching the handler. Browser `fetch` DELETE without an explicit body sends no `Content-Length`, so a single Unhack click sat blocked for 5 s server-side. Sending an empty body forces the browser to emit `Content-Length: 0`, putting cpp-httplib on its fast path.
 
 ## Is this tool for me
 

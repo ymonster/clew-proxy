@@ -71,10 +71,7 @@ void process_tree_manager::add_listener(tree_change_receiver* listener) {
 }
 
 void process_tree_manager::notify_tree_changed(std::string_view source, push_urgency urgency) {
-    PC_LOG_INFO("[DIAG-NOTIFY] source={} urgency={} listeners={}",
-                source,
-                urgency == push_urgency::immediate ? "immediate" : "batched",
-                listeners_.size());
+    (void)source;  // reserved for future diagnostic logging
     for (auto* l : listeners_) l->on_tree_changed(urgency);
 }
 

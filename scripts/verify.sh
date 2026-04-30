@@ -2,14 +2,18 @@
 # Clew refactor verification script.
 #
 # One shot:
-#   1. cmake build (incremental — assumes build/ is already configured)
-#   2. seven layering grep guards that assert the three-layer boundaries
-#   3. run tests/run_all.py (launches clew.exe, runs e2e, teardown)
+#   1. frontend build (Vite — picks up notify.ts and Vue changes)
+#   2. cmake build (incremental — assumes build/ is already configured)
+#   3. seven layering grep guards that assert the three-layer boundaries
+#   4. run tests/run_all.py (launches clew.exe, runs HTTP e2e, teardown)
+#   5. run tests/playwright_e2e/run_pw.py (launches clew.exe with CDP,
+#      runs Playwright + WebView2 e2e, teardown)
 #
 # Exit 0 on full green. Any step failure exits non-zero with a clear
 # "FAIL: ..." prefix. Safe to re-run; idempotent.
 #
-# Requires administrator shell (clew.exe needs elevation).
+# Requires administrator shell (clew.exe needs elevation) and `uv` on PATH
+# (used by the Playwright suite via PEP 723 inline-deps).
 
 set -euo pipefail
 
@@ -22,19 +26,29 @@ fail() {
 }
 
 # ---------------------------------------------------------------------------
-# 1/3 build
+# 1/5 frontend build
 # ---------------------------------------------------------------------------
-echo "==> 1/3 build"
+echo "==> 1/5 frontend build"
+if [[ ! -d frontend ]]; then
+    fail "frontend/ directory missing"
+fi
+(cd frontend && npm run build)
+
+# ---------------------------------------------------------------------------
+# 2/5 cpp build
+# ---------------------------------------------------------------------------
+echo
+echo "==> 2/5 cpp build"
 if [[ ! -d build ]]; then
     fail "build/ directory missing. Run 'cmake --preset windows-vcpkg' first."
 fi
 cmake --build build --config Release --target clew
 
 # ---------------------------------------------------------------------------
-# 2/3 layering grep
+# 3/5 layering grep
 # ---------------------------------------------------------------------------
 echo
-echo "==> 2/3 layering grep"
+echo "==> 3/5 layering grep"
 
 grep_must_be_empty() {
     local pattern=$1
@@ -78,11 +92,21 @@ done
 echo 'layering OK'
 
 # ---------------------------------------------------------------------------
-# 3/3 run e2e
+# 4/5 HTTP e2e
 # ---------------------------------------------------------------------------
 echo
-echo "==> 3/3 run e2e (tests/run_all.py)"
+echo "==> 4/5 HTTP e2e (tests/run_all.py)"
 python tests/run_all.py
+
+# ---------------------------------------------------------------------------
+# 5/5 Playwright e2e
+# ---------------------------------------------------------------------------
+echo
+echo "==> 5/5 Playwright e2e (tests/playwright_e2e/run_pw.py)"
+if ! command -v uv >/dev/null 2>&1; then
+    fail "uv not found on PATH (required for PEP 723 inline-deps script)"
+fi
+uv run --script tests/playwright_e2e/run_pw.py
 
 echo
 echo 'ALL GREEN'

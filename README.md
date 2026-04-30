@@ -24,6 +24,9 @@
 - **多 SOCKS5 后端**：支持多组代理，不同规则路由到不同组。因为我用到的大多数代理服务工具都支持 socks5，而 http 代理这些工具自身就支持，不需要我来做。
 - **UDP 支持**：per-app-port SOCKS5 UDP ASSOCIATE，基于 RFC 1928。
 - **内置 DNS forwarder**：启用后把系统 DNS 自动指向 Clew 的内置 forwarder，DNS 查询走 SOCKS5 到上游；关闭或退出会还原系统 DNS，异常被强杀，下次启动也会检测残留并恢复。
+- **UI 即时响应**：v0.8.1 及之前 hack / unhack 等操作偶尔会卡几秒；这版分开修了两个互不相关的成因：
+  - **状态推送改走 WebView2 进程内 IPC**：原先用 HTTP/SSE 推送，SSE 长连接会占住 HTTP/1.1 同源 6 连接里的一个槽位，并且 chunked 字节流的解码常驻 V8 主线程；换成 `PostWebMessageAsJson` 后推送不再走浏览器网络栈，连接池和 V8 都松快了。
+  - **DELETE 请求显式带 `body: ''`**：cpp-httplib 把所有 DELETE 当作"可能有 body"，没看到 Content-Length 时会 peek 等满 5 秒 `read_timeout` 才把请求交给 handler；浏览器 fetch DELETE 默认不发 Content-Length，结果一次 unhack 死等 5 秒。前端在 DELETE 请求里显式带空 body 让浏览器写出 `Content-Length: 0`，cpp-httplib 走快路立即处理。
 
 ## 这个工具适不适合我
 

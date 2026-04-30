@@ -44,6 +44,7 @@ static void print_usage() {
     std::cout << "Usage: clew [options]\n\n";
     std::cout << "Options:\n";
     std::cout << "  --gui           Launch with WebView2 GUI\n";
+    std::cout << "  --devtools      Enable WebView2 DevTools (F12)\n";
     std::cout << "  --static-dir    Path to static files directory\n";
     std::cout << "  --help, -h      Show this help message\n\n";
 }
@@ -55,6 +56,7 @@ static clew::cli_options parse_args(int argc, char* argv[]) {
     while (it != args.end()) {
         std::string_view arg = *it++;
         if (arg == "--gui") opts.gui_mode = true;
+        else if (arg == "--devtools") opts.devtools = true;
         else if (arg == "--static-dir" && it != args.end()) opts.static_dir = *it++;
         else if (arg == "--help" || arg == "-h") opts.help = true;
     }

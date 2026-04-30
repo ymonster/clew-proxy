@@ -230,14 +230,6 @@ private:
         }
         if (!decoded) return;
 
-        // Log at the ETW callback thread — the *real* arrival cadence,
-        // independent of any downstream strand backlog. The post-into-strand
-        // path is what the [DIAG-NOTIFY] line later reflects, but its
-        // timestamp is when the strand picked it up, not when ETW saw it.
-        PC_LOG_INFO("[DIAG-ETW] type={} pid={}",
-                    evt.type == etw_process_event::START ? "START" : "STOP",
-                    evt.pid);
-
         self->callback_(evt);
     }
 

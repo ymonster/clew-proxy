@@ -58,6 +58,7 @@ namespace clew {
 struct cli_options {
     bool        gui_mode = false;
     bool        help     = false;
+    bool        devtools = false;  // --devtools: enable WebView2 DevTools (F12)
     std::string static_dir;
 };
 

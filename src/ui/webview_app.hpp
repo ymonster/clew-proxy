@@ -40,6 +40,7 @@ class webview_app : public frontend_push_sink {
         std::string json_body;
     };
 private:
+
     HWND hwnd_ = nullptr;
     std::wstring url_;
     int width_ = 1200;
@@ -70,7 +71,23 @@ private:
         }
 
         auto options = Microsoft::WRL::Make<CoreWebView2EnvironmentOptions>();
-        options->put_AdditionalBrowserArguments(L"--no-proxy-server");
+        // WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS env var is normally honored
+        // by WebView2, but only when the host did NOT call
+        // put_AdditionalBrowserArguments. Since we always pass --no-proxy-server,
+        // we'd otherwise mask the env var. Merge it explicitly so testers can
+        // do e.g. WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222
+        // to attach Playwright over CDP.
+        std::wstring browser_args = L"--no-proxy-server";
+        if (auto* env = std::getenv("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"); env && *env) {
+            const int wlen = MultiByteToWideChar(CP_UTF8, 0, env, -1, nullptr, 0);
+            if (wlen > 1) {
+                std::wstring extra(static_cast<size_t>(wlen - 1), L'\0');
+                MultiByteToWideChar(CP_UTF8, 0, env, -1, extra.data(), wlen);
+                browser_args.push_back(L' ');
+                browser_args.append(extra);
+            }
+        }
+        options->put_AdditionalBrowserArguments(browser_args.c_str());
 
         HRESULT hr = CreateCoreWebView2EnvironmentWithOptions(
             nullptr, user_data_folder.c_str(), options.Get(),
@@ -362,8 +379,6 @@ private:
 #ifdef CLEW_HAS_WEBVIEW2
         if (!webview_) return 0;
 
-        const auto t0 = std::chrono::steady_clock::now();
-
         // Compose envelope. p->json_body is already a JSON value (object / array).
         std::string envelope;
         envelope.reserve(p->event.size() + p->json_body.size() + 32);
@@ -384,11 +399,6 @@ private:
                             wenvelope.data(), wlen);
 
         webview_->PostWebMessageAsJson(wenvelope.c_str());
-
-        const auto t1 = std::chrono::steady_clock::now();
-        const auto us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
-        PC_LOG_INFO("[DIAG-PUSH] dispatched event={} bytes={} us={}",
-                    p->event, envelope.size(), us);
 #endif
         return 0;
     }
@@ -463,7 +473,6 @@ public:
         auto p = std::make_unique<push_payload>();
         p->event.assign(event.data(), event.size());
         p->json_body = std::move(json_body);
-        PC_LOG_INFO("[DIAG-PUSH] queued event={} bytes={}", p->event, p->json_body.size());
 
         LPARAM lp = reinterpret_cast<LPARAM>(p.release());
         if (!::PostMessageW(hwnd_, WM_PUSH_TO_FRONTEND, 0, lp)) {
