@@ -55,7 +55,12 @@ private:
     bool devtools_enabled_ = true;
     NOTIFYICONDATAW nid_ = {};
     bool tray_created_ = false;
+    bool currently_visible_ = true;
     std::function<void()> on_ready_;
+    // Fired whenever the host transitions WebView2 IsVisible. Wired in
+    // app.cpp to process_projection::set_frontend_visible so the backend
+    // push pipeline can drop work while the frontend is hidden.
+    std::function<void(bool)> on_visibility_change_;
 
 #ifdef CLEW_HAS_WEBVIEW2
     Microsoft::WRL::ComPtr<ICoreWebView2Controller> webview_controller_;
@@ -261,6 +266,24 @@ private:
         ShowWindow(hwnd_, SW_SHOW);
         ShowWindow(hwnd_, SW_RESTORE);
         SetForegroundWindow(hwnd_);
+        set_visible(true);
+    }
+
+    // Single chokepoint for visibility transitions. Drives both the
+    // WebView2 controller's IsVisible (which is what makes
+    // document.visibilityState reflect reality in the embedded page) and
+    // the optional on_visibility_change_ callback (which lets the backend
+    // push pipeline drop work while hidden). Idempotent — repeated calls
+    // with the same state are no-ops, which matters for WM_SIZE bursts.
+    void set_visible(bool v) {
+        if (currently_visible_ == v) return;
+        currently_visible_ = v;
+#ifdef CLEW_HAS_WEBVIEW2
+        if (webview_controller_) {
+            webview_controller_->put_IsVisible(v ? TRUE : FALSE);
+        }
+#endif
+        if (on_visibility_change_) on_visibility_change_(v);
     }
 
     // ---- Hit test for resize edges (title bar drag handled by WebView2 NonClientRegion) ----
@@ -315,11 +338,22 @@ private:
                 ? L"document.documentElement.classList.add('maximized')"
                 : L"document.documentElement.classList.remove('maximized')");
         }
+        // Sync WebView2 IsVisible with window state. WebView2 docs (idl
+        // section "IsVisible") explicitly recommend toggling on
+        // SIZE_MINIMIZED / SIZE_RESTORED — without it the embedded page
+        // keeps rendering and document.visibilityState stays 'visible'
+        // even when the host is minimized.
+        if (wparam == SIZE_MINIMIZED) {
+            set_visible(false);
+        } else if (wparam == SIZE_RESTORED || wparam == SIZE_MAXIMIZED) {
+            set_visible(true);
+        }
         return 0;
     }
 
     LRESULT on_close(HWND hwnd) {
         if (close_to_tray_) {
+            set_visible(false);
             ShowWindow(hwnd, SW_HIDE);
             return 0;
         }
@@ -464,6 +498,12 @@ public:
     // mount. The callback typically posts a strand task that calls
     // process_projection::replay_to_frontend to deliver the current snapshot.
     void set_on_ready(std::function<void()> callback) { on_ready_ = std::move(callback); }
+    // Fired on the UI thread whenever the host transitions WebView2 IsVisible
+    // (WM_SIZE minimize/restore + close-to-tray + tray click). Wired in
+    // app.cpp to process_projection::set_frontend_visible.
+    void set_on_visibility_change(std::function<void(bool)> callback) {
+        on_visibility_change_ = std::move(callback);
+    }
 
     // frontend_push_sink — callable from any thread. Marshals onto the UI
     // thread via PostMessageW, where on_push_to_frontend takes ownership

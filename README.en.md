@@ -142,6 +142,10 @@ Full license information: see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 Technically cleaner (`FWPM_LAYER_ALE_CONNECT_REDIRECT_V4` rewrites the socket destination directly — zero packet manipulation), but the fatal issue: Windows 10+ requires kernel drivers to be signed by Microsoft, via Partner Center, which needs an EV code-signing certificate (~300–600 USD / year) and an attestation flow. SignPath-style OSS signing services only cover user-mode Authenticode — they don't do kernel drivers. The cost isn't worth it for a personal open-source project right now.
 
+### Process tree update strategy (`CLEW_PROJECTION_COALESCE`)
+
+By default every ETW process event triggers an immediate frontend refresh + push — no timer-based coalesce window. Normal usage (even with 1000+ live processes) is unaffected; the strand stays under 1% utilisation. Only **sudden bursts of +1000 ETW events** (e.g. a tool forking thousands of children at once) can briefly saturate the strand with serialisation. Common UI flows like "click on a specific process to inspect it" stay snappy even during such bursts. If you hit such an extreme workload and want extra headroom, enable a 100ms refresh-coalesce window with `cmake -DCLEW_PROJECTION_COALESCE=ON` (trade-off: tree updates lag up to 100ms).
+
 ## Build
 
 ### Toolchain

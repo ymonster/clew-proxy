@@ -16,6 +16,7 @@ import type { NetworkConnection } from '@/api/types'
 import { Input } from '@/components/ui/input'
 import { Search, Moon } from 'lucide-vue-next'
 import { useTheme } from '@/composables/useTheme'
+import { useDocumentVisibility } from '@/composables/useDocumentVisibility'
 
 const props = defineProps<{
   selectedPid?: number
@@ -148,6 +149,7 @@ const defaultColDef = {
   resizable: true,
 }
 
+const documentVisible = useDocumentVisibility()
 let timer: ReturnType<typeof setInterval> | null = null
 
 async function fetchConnections() {
@@ -176,7 +178,7 @@ function onGridReady(params: { api: GridApi }) {
 }
 
 watch(() => props.selectedPid, () => {
-  fetchConnections()
+  if (documentVisible.value) fetchConnections()
 })
 
 watch(filterText, (text) => {
@@ -185,8 +187,13 @@ watch(filterText, (text) => {
   }
 })
 
+// Suspend the 2s /api/tcp poll while hidden. Restart immediately on
+// visible — the table is data-dense so a stale state on restore would
+// be visibly wrong.
+watch(documentVisible, v => v ? startPolling() : stopPolling())
+
 onMounted(() => {
-  startPolling()
+  if (documentVisible.value) startPolling()
 })
 
 onUnmounted(() => {

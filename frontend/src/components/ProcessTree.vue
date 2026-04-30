@@ -1,12 +1,14 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { hijackProcess, unhijackProcess, getTcpConnections } from '@/api/client'
 import { useNotifications } from '@/api/notify'
+import { useDocumentVisibility } from '@/composables/useDocumentVisibility'
 import type { ProcessInfo } from '@/api/types'
 import { Search, Monitor } from 'lucide-vue-next'
 import ProcessTreeNode from './ProcessTreeNode.vue'
 
 const notify = useNotifications()
+const documentVisible = useDocumentVisibility()
 
 // Process tree is a shared ref maintained by notify.ts: every backend
 // `process_update` push replaces it with a fresh snapshot. We bind the
@@ -55,18 +57,30 @@ function isPidActive(pid: number): boolean {
   return Date.now() - lastSeen < ACTIVITY_TIMEOUT_MS
 }
 
-onMounted(() => {
+function startActivityPolling() {
+  if (activityTimer) return
   fetchActivity()
   // /api/tcp is still polled (per-connection metadata is high-frequency
   // and tab-scoped, not part of the tree push payload).
   activityTimer = setInterval(fetchActivity, 10_000)
-})
+}
 
-onUnmounted(() => {
+function stopActivityPolling() {
   if (activityTimer) {
     clearInterval(activityTimer)
     activityTimer = null
   }
+}
+
+// Suspend the 10s activity poll while hidden; resume on visible.
+watch(documentVisible, v => v ? startActivityPolling() : stopActivityPolling())
+
+onMounted(() => {
+  if (documentVisible.value) startActivityPolling()
+})
+
+onUnmounted(() => {
+  stopActivityPolling()
 })
 
 // --- Tree helpers ---

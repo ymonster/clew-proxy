@@ -56,6 +56,14 @@ endif()
 # Option to enable WebView2 GUI support
 option(CLEW_ENABLE_WEBVIEW2 "Enable WebView2 GUI support" OFF)
 
+# Optional 100ms refresh-coalesce window in process_projection.
+# Default OFF — the strand cost of refresh-per-event at typical loads
+# (a few hundred to a few thousand processes, low ETW churn) is
+# negligible, and instant pushes feel snappier. Enable only if you
+# have a real workload where ETW bursts (e.g. parallel build kicks
+# off thousands of children at once) saturate the strand.
+option(CLEW_PROJECTION_COALESCE "Enable projection coalesce window (100ms)" OFF)
+
 # ============================================================
 # Dependencies (vcpkg)
 # ============================================================
@@ -125,6 +133,11 @@ if(CLEW_ENABLE_WEBVIEW2)
     target_compile_definitions(clew PRIVATE CLEW_HAS_WEBVIEW2)
 else()
     add_executable(clew ${CLEW_SOURCES})
+endif()
+
+if(CLEW_PROJECTION_COALESCE)
+    target_compile_definitions(clew PRIVATE CLEW_PROJECTION_COALESCE)
+    message(STATUS "CLEW_PROJECTION_COALESCE=ON — projection arms a 100ms refresh-coalesce timer for batched events")
 endif()
 
 # UAC elevation: embed manifest requesting administrator privileges

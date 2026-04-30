@@ -104,6 +104,13 @@ app::app(const cli_options& opts, HINSTANCE hinstance)
         gui_->set_on_ready([this]() {
             projection_.replay_to_frontend();
         });
+        // Visibility hand-off. Host transitions IsVisible on minimize /
+        // restore / tray hide / tray show; projection drops on_tree_changed
+        // work while hidden, and replay_to_frontend (driven by the next
+        // ready handshake on visible) catches the frontend back up.
+        gui_->set_on_visibility_change([this](bool v) {
+            projection_.set_frontend_visible(v);
+        });
     }
 }
 

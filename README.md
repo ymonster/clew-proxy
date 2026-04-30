@@ -142,6 +142,10 @@ Rules 标签页
 
 技术上更完善（`FWPM_LAYER_ALE_CONNECT_REDIRECT_V4` 直接改 socket 目标、零包操作），但有一个非常关键的问题： Windows 10+ 要求 kernel driver 必须由 Microsoft 签名，走 Partner Center 需要一张 EV code signing 证书（约 300–600 美元 / 年）和 attestation 流程，成本过高。
 
+### 进程树更新策略（`CLEW_PROJECTION_COALESCE`）
+
+默认每个 ETW 进程事件直接刷新前端、即时推送，不做 timer 合并。常规使用——即使 1000+ 进程在跑——完全没问题，strand 利用率不到 1%。只有**瞬间 +1000 进程的 ETW 风暴**（比如某个工具一次 fork 出几千个子进程）才可能让 strand 短时间被序列化负担占住；UI 上常用的"看某个特定进程"这类操作即使在风暴期间也不会被影响。如果遇到这类极端工作负载且需要进一步缓解，可以编译时打开 `cmake -DCLEW_PROJECTION_COALESCE=ON` 启用 100ms 合并窗口（代价：树更新最多滞后 100ms）。
+
 ## 构建
 
 ### 构建工具链

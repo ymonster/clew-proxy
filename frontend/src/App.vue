@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, shallowRef, defineAsyncComponent } from 'vue'
+import { ref, computed, onMounted, onUnmounted, shallowRef, defineAsyncComponent, watch } from 'vue'
 import { Tabs, TabsContent } from '@/components/ui/tabs'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import ProcessTree from '@/components/ProcessTree.vue'
@@ -13,6 +13,7 @@ import { getStats, getProcessDetail, createAutoRule, updateAutoRule, deleteAutoR
 import { useNotifications } from '@/api/notify'
 import { useTheme } from '@/composables/useTheme'
 import { useStatusBus } from '@/composables/useStatusBus'
+import { useDocumentVisibility } from '@/composables/useDocumentVisibility'
 import { CLEW_VERSION } from '@/version'
 import type { Stats, ProcessInfo, AutoRule } from '@/api/types'
 import {
@@ -46,7 +47,10 @@ onMounted(() => observer.observe(document.documentElement, { attributes: true, a
 onUnmounted(() => observer.disconnect())
 
 const selectedPid = ref<number | undefined>(undefined)
-const selectedProcess = shallowRef<ProcessInfo | null>(null)
+// Static fields (cmdline, image_path) come from a one-shot detail fetch
+// in onSelectProcess. The OS process command line + image path don't change
+// while the process is alive, so there's no reason to refetch on every push.
+const selectedDetail = shallowRef<ProcessInfo | null>(null)
 
 const stats = ref<Stats>({
   hijacked_pids: 0,
@@ -105,14 +109,47 @@ async function onRuleDeleteFromDialog(id: string) {
 }
 
 const notify = useNotifications()
+const documentVisible = useDocumentVisibility()
 
-// Tree state arrives via WebView2 PostMessage and is auto-applied to
-// notify.tree by the dispatcher in notify.ts; ProcessTree binds to it
-// directly. We still re-fetch the selected process's detail (cmdline +
-// image_path are not in the push payload) so ProcessContextHeader picks
-// up updated hijack_source / group_id immediately.
-notify.on('process_update', () => {
-  refreshSelectedProcess()
+// Live view of the selected process. Dynamic fields (hijacked,
+// hijack_source, name) come from the pushed tree snapshot — they update
+// reactively as soon as a new process_update arrives, no extra fetch
+// needed. Static fields (cmdline, image_path) come from the one-shot
+// detail fetch in onSelectProcess. ProcessContextHeader binds to this.
+function findInTree(nodes: ProcessInfo[], pid: number): ProcessInfo | null {
+  for (const n of nodes) {
+    if (n.pid === pid) return n
+    if (n.children) {
+      const f = findInTree(n.children, pid)
+      if (f) return f
+    }
+  }
+  return null
+}
+
+const selectedProcess = computed<ProcessInfo | null>(() => {
+  const pid = selectedPid.value
+  if (pid == null) return null
+  const live = findInTree(notify.tree.value, pid)
+  if (!live) return null
+  const detail = selectedDetail.value
+  // Detail may belong to a previously-selected pid if the user just clicked
+  // a different process and the fetch for the new one hasn't returned yet.
+  // Only merge static fields when the pids match.
+  if (detail && detail.pid === pid) {
+    return { ...live, cmdline: detail.cmdline, image_path: detail.image_path }
+  }
+  return live
+})
+
+// When the host transitions back to visible, post the ready handshake so
+// the backend's projection.replay_to_frontend pushes a fresh snapshot.
+// This catches us up on any tree mutations that happened while hidden
+// (we drop them backend-side to save work; replay covers the gap).
+watch(documentVisible, (v, prev) => {
+  if (v && !prev) {
+    window.chrome?.webview?.postMessage({ type: 'ready' })
+  }
 })
 
 // Tab config — match mockup icons
@@ -134,30 +171,18 @@ async function fetchStatus() {
 async function onSelectProcess(pid: number | undefined) {
   selectedPid.value = pid
   if (pid == null) {
-    selectedProcess.value = null
+    selectedDetail.value = null
     return
   }
   try {
     const detail = await getProcessDetail(pid)
-    if (selectedPid.value === pid) selectedProcess.value = detail
+    if (selectedPid.value === pid) selectedDetail.value = detail
   } catch {
-    if (selectedPid.value === pid) selectedProcess.value = null
+    if (selectedPid.value === pid) selectedDetail.value = null
   }
 }
 
 // === ProcessContextHeader support ===
-
-async function refreshSelectedProcess() {
-  const pid = selectedPid.value
-  if (pid != null) {
-    try {
-      const detail = await getProcessDetail(pid)
-      if (selectedPid.value === pid) selectedProcess.value = detail
-    } catch {
-      if (selectedPid.value === pid) selectedProcess.value = null
-    }
-  }
-}
 
 function onCreateRuleFromProcess() {
   if (!selectedProcess.value) return
@@ -181,13 +206,30 @@ function onCreateRuleFromProcess() {
 
 let statusTimer: ReturnType<typeof setInterval> | null = null
 
-onMounted(() => {
+function startStatusPolling() {
+  if (statusTimer) return
   fetchStatus()
   statusTimer = setInterval(fetchStatus, 3000)
+}
+
+function stopStatusPolling() {
+  if (statusTimer) {
+    clearInterval(statusTimer)
+    statusTimer = null
+  }
+}
+
+// Gate the /api/stats poll on visibility. While hidden we save 1 HTTP RTT
+// every 3s; on becoming visible we re-fire immediately so the badges in
+// the title bar are not stale by up to 3s after restore.
+watch(documentVisible, v => v ? startStatusPolling() : stopStatusPolling())
+
+onMounted(() => {
+  if (documentVisible.value) startStatusPolling()
 })
 
 onUnmounted(() => {
-  if (statusTimer) clearInterval(statusTimer)
+  stopStatusPolling()
 })
 </script>
 
