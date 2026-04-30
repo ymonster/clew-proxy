@@ -97,8 +97,12 @@ public:
     [[nodiscard]] bool is_initialized() const noexcept { return tree_initialized_; }
 
 private:
-    void notify_tree_changed();
-    void notify_process_exit(DWORD pid);
+    // `source` is a short literal label ("etw_start" / "etw_stop" /
+    // "manual_hijack" / "manual_unhijack" / "batch_hijack" / "rule_exclude" /
+    // "rule_unexclude" / "auto_rules_apply" / "init" / "reconcile") used by
+    // the [DIAG-NOTIFY] log line so we can attribute SSE broadcast pressure
+    // to its origin. Caller must pass a string with static lifetime (literal).
+    void notify_tree_changed(std::string_view source);
 
     void apply_etw_event_locked(const etw_process_event& evt);
     void build_initial_tree(const std::vector<raw_process_record>& snapshot);

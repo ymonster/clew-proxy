@@ -3,7 +3,6 @@ import type { ProcessInfo, AutoRule } from './types'
 
 export interface SSEEvents {
   process_update: ProcessInfo
-  process_exit: { pid: number }
   auto_rule_changed: AutoRule
   auto_rule_matched: { rule_id: string; pid: number; process_name: string }
 }
@@ -41,7 +40,6 @@ async function connect(): Promise<void> {
 
     const eventTypes: SSEEventType[] = [
       'process_update',
-      'process_exit',
       'auto_rule_changed',
       'auto_rule_matched',
     ]

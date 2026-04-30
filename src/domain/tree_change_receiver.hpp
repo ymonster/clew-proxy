@@ -7,24 +7,19 @@
 // and are expected to outlive the manager (main.cpp owns both).
 // All receiver methods are invoked on the manager's strand.
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <winsock2.h>
-#include <windows.h>  // DWORD
-
 namespace clew {
 
 class tree_change_receiver {
 public:
     virtual ~tree_change_receiver() = default;
 
-    // Called after any tree mutation (ETW process start, manual hijack,
-    // rule apply). Fired inside the manager's strand.
+    // Called after any tree mutation (ETW process start/stop, manual hijack,
+    // rule apply). Fired inside the manager's strand. The previously
+    // separate on_process_exit hook has been removed: a STOP already runs
+    // through this same notify path, and the projection has no state to
+    // update for an exit beyond the snapshot rebuild that on_tree_changed
+    // already does.
     virtual void on_tree_changed() = 0;
-
-    // Called when a process exits (ETW ProcessStop). Fired inside the strand.
-    virtual void on_process_exit(DWORD pid) = 0;
 };
 
 } // namespace clew

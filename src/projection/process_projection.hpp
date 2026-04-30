@@ -8,12 +8,6 @@
 // strand_bound_manager) because on_tree_changed is already invoked inside
 // the strand; wrapping it in strand_bound.query() here would deadlock.
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <winsock2.h>
-#include <windows.h>  // DWORD
-
 #include <atomic>
 #include <memory>
 #include <string>
@@ -36,7 +30,6 @@ public:
 
     // tree_change_receiver
     void on_tree_changed() override;
-    void on_process_exit(DWORD pid) override;
 
     // Lock-free read for process_tree_service.
     [[nodiscard]] std::shared_ptr<const std::string> tree_snapshot() const noexcept;

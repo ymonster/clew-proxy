@@ -119,11 +119,6 @@ sse.on('process_update', () => {
   refreshSelectedProcess()
 })
 
-sse.on('process_exit', () => {
-  processTreeRef.value?.fetchProcesses()
-  refreshSelectedProcess()
-})
-
 // Tab config — match mockup icons
 const tabs = [
   { key: 'network',  label: 'Network Activities', icon: Wifi },

@@ -21,13 +21,6 @@ void process_projection::on_tree_changed() {
     sse_.broadcast(sse_events::process_update, nlohmann::json::object());
 }
 
-void process_projection::on_process_exit(DWORD pid) {
-    // Tree snapshot was refreshed by the corresponding on_tree_changed call
-    // (manager fires both when a STOP event is applied); we just need to
-    // announce the exit.
-    sse_.broadcast(sse_events::process_exit, nlohmann::json{{"pid", pid}});
-}
-
 std::shared_ptr<const std::string> process_projection::tree_snapshot() const noexcept {
     return snapshot_.load();
 }

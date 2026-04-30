@@ -9,7 +9,7 @@
 //
 // DESIGN H5 hard constraint: service code is FORBIDDEN from invoking
 // broadcast() directly. All SSE events are derived from state holders:
-//   - process_projection    -> process_update / process_exit
+//   - process_projection    -> process_update
 //   - config_sse_bridge     -> auto_rule_changed
 
 #include <mutex>

@@ -20,7 +20,19 @@ namespace clew {
 
 namespace {
 
-constexpr auto kKeepAliveInterval = std::chrono::seconds(15);
+// Keep-alive design:
+// - The provider lambda blocks until the connection ends. We can't sleep for
+//   long durations: when a client disconnects we only notice on the next
+//   `is_writable()` check, and the sink stays in `sse_hub` until then. With
+//   a 15s sleep, a stale sink could linger 15s; combined with auto-reconnect
+//   on the frontend that produced periods with two attached sinks, doubling
+//   broadcast fan-out and the GET storm it triggers.
+// - Polling every kPollInterval keeps stale-sink lifetime bounded by that
+//   interval. Pings only need to reach the client roughly every kPingEvery
+//   poll ticks (1s here is enough to keep most browser/proxy idle timers
+//   happy without flooding).
+constexpr auto kPollInterval = std::chrono::milliseconds(200);
+constexpr int  kPingEvery    = 5;  // → ~1s between actual ping writes
 
 void handle_events(const httplib::Request&, httplib::Response& res, const api_context& ctx) {
     res.set_header("Cache-Control", "no-cache");
@@ -38,10 +50,14 @@ void handle_events(const httplib::Request&, httplib::Response& res, const api_co
             sink.write(kHello.data(), kHello.size());
 
             static constexpr std::string_view kPing = ":ping\n\n";
+            int ticks = 0;
             while (sink.is_writable() && hub.is_running()) {
-                std::this_thread::sleep_for(kKeepAliveInterval);
+                std::this_thread::sleep_for(kPollInterval);
                 if (!sink.is_writable() || !hub.is_running()) break;
-                sink.write(kPing.data(), kPing.size());
+                if (++ticks >= kPingEvery) {
+                    sink.write(kPing.data(), kPing.size());
+                    ticks = 0;
+                }
             }
 
             hub.detach(&sink);
