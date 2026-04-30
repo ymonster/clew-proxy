@@ -8,8 +8,7 @@
 #include "config/config_change_tag.hpp"
 #include "config/config_store.hpp"
 #include "config/types.hpp"
-#include "transport/sse_events.hpp"
-#include "transport/sse_hub.hpp"
+#include "transport/frontend_push_sink.hpp"
 
 namespace clew {
 
@@ -34,11 +33,12 @@ std::string_view tag_to_action(config_change tag) noexcept {
 
 } // namespace
 
-config_sse_bridge::config_sse_bridge(config_store& cfg, sse_hub& sse) : sse_(sse) {
+config_sse_bridge::config_sse_bridge(config_store& cfg) {
     cfg.subscribe([this](const ConfigV2&, config_change tag) {
-        sse_.broadcast(
-            sse_events::auto_rule_changed,
-            nlohmann::json{{"action", std::string(tag_to_action(tag))}});
+        auto* sink = sink_.load();
+        if (!sink) return;
+        auto body = nlohmann::json{{"action", std::string(tag_to_action(tag))}}.dump();
+        sink->push("auto_rule_changed", std::move(body));
     });
 }
 

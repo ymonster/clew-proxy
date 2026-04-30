@@ -70,9 +70,12 @@ void process_tree_manager::add_listener(tree_change_receiver* listener) {
     if (listener) listeners_.push_back(listener);
 }
 
-void process_tree_manager::notify_tree_changed(std::string_view source) {
-    PC_LOG_INFO("[DIAG-NOTIFY] source={} listeners={}", source, listeners_.size());
-    for (auto* l : listeners_) l->on_tree_changed();
+void process_tree_manager::notify_tree_changed(std::string_view source, push_urgency urgency) {
+    PC_LOG_INFO("[DIAG-NOTIFY] source={} urgency={} listeners={}",
+                source,
+                urgency == push_urgency::immediate ? "immediate" : "batched",
+                listeners_.size());
+    for (auto* l : listeners_) l->on_tree_changed(urgency);
 }
 
 // --- Mutation APIs ---
@@ -84,7 +87,7 @@ bool process_tree_manager::hijack_pid(DWORD pid, bool tree_mode, uint32_t gid) {
     } else {
         rules_.manual_hijack(tree_, pid, gid);
     }
-    notify_tree_changed("manual_hijack");
+    notify_tree_changed("manual_hijack", push_urgency::immediate);
     return true;
 }
 
@@ -95,7 +98,7 @@ bool process_tree_manager::unhijack_pid(DWORD pid, bool tree_mode) {
     } else {
         rules_.manual_unhijack(tree_, pid);
     }
-    notify_tree_changed("manual_unhijack");
+    notify_tree_changed("manual_unhijack", push_urgency::immediate);
     return true;
 }
 
@@ -120,26 +123,26 @@ bool process_tree_manager::batch_hijack(const std::vector<DWORD>& add,
         }
     }
 
-    if (changes > 0) notify_tree_changed("batch_hijack");
+    if (changes > 0) notify_tree_changed("batch_hijack", push_urgency::immediate);
     return changes > 0;
 }
 
 bool process_tree_manager::exclude_rule_pid(std::string_view rule_id, DWORD pid) {
     bool ok = rules_.exclude_pid(tree_, rule_id, pid);
-    if (ok) notify_tree_changed("rule_exclude");
+    if (ok) notify_tree_changed("rule_exclude", push_urgency::immediate);
     return ok;
 }
 
 bool process_tree_manager::unexclude_rule_pid(std::string_view rule_id, DWORD pid) {
     bool ok = rules_.unexclude_pid(rule_id, pid);
-    if (ok) notify_tree_changed("rule_unexclude");
+    if (ok) notify_tree_changed("rule_unexclude", push_urgency::immediate);
     return ok;
 }
 
 void process_tree_manager::apply_auto_rules_from_config(const std::vector<AutoRule>& rules) {
     rules_.set_auto_rules(rules);
     rules_.apply_auto_rules(tree_);
-    notify_tree_changed("auto_rules_apply");
+    notify_tree_changed("auto_rules_apply", push_urgency::immediate);
 }
 
 // --- ETW entry points ---
@@ -150,7 +153,7 @@ void process_tree_manager::on_etw_process_start(const etw_process_event& evt) {
         return;
     }
     apply_etw_event_locked(evt);
-    notify_tree_changed("etw_start");
+    notify_tree_changed("etw_start", push_urgency::batched);
 }
 
 void process_tree_manager::on_etw_process_stop(const etw_process_event& evt) {
@@ -159,7 +162,7 @@ void process_tree_manager::on_etw_process_stop(const etw_process_event& evt) {
         return;
     }
     apply_etw_event_locked(evt);
-    notify_tree_changed("etw_stop");
+    notify_tree_changed("etw_stop", push_urgency::batched);
 }
 
 // --- Internal event handling ---
@@ -202,7 +205,7 @@ void process_tree_manager::build_initial_tree(const std::vector<raw_process_reco
     tree_initialized_ = true;
     PC_LOG_INFO("[TreeMgr] Tree initialized, entering normal operation");
 
-    notify_tree_changed("init");
+    notify_tree_changed("init", push_urgency::immediate);
     schedule_reconcile();
 }
 
@@ -260,7 +263,7 @@ void process_tree_manager::reconcile_with_snapshot(const std::vector<raw_process
 
     if (added > 0 || removed > 0) {
         PC_LOG_INFO("[TreeMgr] Reconcile: +{} -{}", added, removed);
-        notify_tree_changed("reconcile");
+        notify_tree_changed("reconcile", push_urgency::batched);
     }
 }
 

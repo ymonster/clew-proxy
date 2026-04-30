@@ -13,19 +13,32 @@
 #include <WebView2.h>
 #include <WebView2EnvironmentOptions.h>
 #endif
-#include <string>
+#include <atomic>
+#include <chrono>
 #include <functional>
+#include <memory>
+#include <string>
+#include <string_view>
 #include "core/log.hpp"
+#include "transport/frontend_push_sink.hpp"
 
 #pragma comment(lib, "dwmapi.lib")
 
 namespace clew {
 
-constexpr UINT WM_TRAYICON = WM_APP + 1;
+constexpr UINT WM_TRAYICON         = WM_APP + 1;
+constexpr UINT WM_PUSH_TO_FRONTEND = WM_APP + 2;
 constexpr UINT IDM_TRAY_SHOW = 40001;
 constexpr UINT IDM_TRAY_EXIT = 40002;
 
-class webview_app {
+class webview_app : public frontend_push_sink {
+    // Heap-allocated payload smuggled through PostMessageW. Producer thread
+    // releases ownership into LPARAM; UI thread takes it back via unique_ptr
+    // in the WM_PUSH_TO_FRONTEND case.
+    struct push_payload {
+        std::string event;
+        std::string json_body;
+    };
 private:
     HWND hwnd_ = nullptr;
     std::wstring url_;
@@ -41,6 +54,7 @@ private:
     bool devtools_enabled_ = true;
     NOTIFYICONDATAW nid_ = {};
     bool tray_created_ = false;
+    std::function<void()> on_ready_;
 
 #ifdef CLEW_HAS_WEBVIEW2
     Microsoft::WRL::ComPtr<ICoreWebView2Controller> webview_controller_;
@@ -111,22 +125,41 @@ private:
                                     settings->Release();
                                 }
 
-                                // Web message handler for window control commands
+                                // Web message handler — dispatches both:
+                                //   1) plain-string window-control commands
+                                //      ("minimize" / "maximize" / "close")
+                                //   2) structured JSON messages
+                                //      ({"type":"ready", ...})
                                 webview_->add_WebMessageReceived(
                                     Microsoft::WRL::Callback<ICoreWebView2WebMessageReceivedEventHandler>(
                                         [this](ICoreWebView2*, ICoreWebView2WebMessageReceivedEventArgs* args) -> HRESULT {
-                                            LPWSTR msg = nullptr;
-                                            args->TryGetWebMessageAsString(&msg);
-                                            if (!msg) return S_OK;
-                                            std::wstring cmd(msg);
-                                            CoTaskMemFree(msg);
+                                            // Plain-string path first.
+                                            LPWSTR str_msg = nullptr;
+                                            if (SUCCEEDED(args->TryGetWebMessageAsString(&str_msg)) && str_msg) {
+                                                std::wstring cmd(str_msg);
+                                                CoTaskMemFree(str_msg);
+                                                if (cmd == L"minimize") {
+                                                    ShowWindow(hwnd_, SW_MINIMIZE);
+                                                } else if (cmd == L"maximize") {
+                                                    ShowWindow(hwnd_, IsZoomed(hwnd_) ? SW_RESTORE : SW_MAXIMIZE);
+                                                } else if (cmd == L"close") {
+                                                    SendMessage(hwnd_, WM_CLOSE, 0, 0);
+                                                }
+                                                return S_OK;
+                                            }
 
-                                            if (cmd == L"minimize") {
-                                                ShowWindow(hwnd_, SW_MINIMIZE);
-                                            } else if (cmd == L"maximize") {
-                                                ShowWindow(hwnd_, IsZoomed(hwnd_) ? SW_RESTORE : SW_MAXIMIZE);
-                                            } else if (cmd == L"close") {
-                                                SendMessage(hwnd_, WM_CLOSE, 0, 0);
+                                            // Structured JSON path. We only care about a tiny set of
+                                            // fields right now, so a substring check is sufficient
+                                            // and avoids pulling nlohmann::json into this header.
+                                            LPWSTR json_msg = nullptr;
+                                            if (SUCCEEDED(args->get_WebMessageAsJson(&json_msg)) && json_msg) {
+                                                std::wstring js(json_msg);
+                                                CoTaskMemFree(json_msg);
+                                                if (js.find(L"\"type\":\"ready\"") != std::wstring::npos
+                                                    || js.find(L"\"type\": \"ready\"") != std::wstring::npos) {
+                                                    PC_LOG_INFO("[push] frontend ready handshake received");
+                                                    if (on_ready_) on_ready_();
+                                                }
                                             }
                                             return S_OK;
                                         }
@@ -319,6 +352,47 @@ private:
         return 0;
     }
 
+    // Runs on the UI thread. Takes ownership of the heap-allocated payload
+    // smuggled through the LPARAM, builds the wire-format JSON envelope
+    // ({event, data}), and hands it to WebView2 for delivery to the frontend.
+    LRESULT on_push_to_frontend(LPARAM lparam) {
+        std::unique_ptr<push_payload> p(reinterpret_cast<push_payload*>(lparam));
+        if (!p) return 0;
+
+#ifdef CLEW_HAS_WEBVIEW2
+        if (!webview_) return 0;
+
+        const auto t0 = std::chrono::steady_clock::now();
+
+        // Compose envelope. p->json_body is already a JSON value (object / array).
+        std::string envelope;
+        envelope.reserve(p->event.size() + p->json_body.size() + 32);
+        envelope.append(R"({"event":")")
+                .append(p->event)
+                .append(R"(","data":)")
+                .append(p->json_body)
+                .append(R"(})");
+
+        // UTF-8 → UTF-16 for PostWebMessageAsJson.
+        int wlen = MultiByteToWideChar(CP_UTF8, 0, envelope.c_str(),
+                                       static_cast<int>(envelope.size()),
+                                       nullptr, 0);
+        if (wlen <= 0) return 0;
+        std::wstring wenvelope(static_cast<size_t>(wlen), L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, envelope.c_str(),
+                            static_cast<int>(envelope.size()),
+                            wenvelope.data(), wlen);
+
+        webview_->PostWebMessageAsJson(wenvelope.c_str());
+
+        const auto t1 = std::chrono::steady_clock::now();
+        const auto us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
+        PC_LOG_INFO("[DIAG-PUSH] dispatched event={} bytes={} us={}",
+                    p->event, envelope.size(), us);
+#endif
+        return 0;
+    }
+
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
         if (msg == WM_CREATE) {
             auto* cs  = reinterpret_cast<CREATESTRUCT*>(lparam);
@@ -344,14 +418,15 @@ private:
                 if (hit != HTCLIENT) return hit;
                 break;
             }
-            case WM_SIZE:           return app->on_size(wparam);
-            case WM_CLOSE:          return app->on_close(hwnd);
-            case WM_DESTROY:        return app->on_destroy();
-            case WM_GETMINMAXINFO:  return on_getminmaxinfo(lparam);
-            case WM_EXITSIZEMOVE:   return app->on_exitsizemove(hwnd);
-            case WM_TRAYICON:       return app->on_trayicon(lparam);
-            case WM_COMMAND:        return app->on_command(hwnd, wparam);
-            default:                break;
+            case WM_SIZE:               return app->on_size(wparam);
+            case WM_CLOSE:              return app->on_close(hwnd);
+            case WM_DESTROY:            return app->on_destroy();
+            case WM_GETMINMAXINFO:      return on_getminmaxinfo(lparam);
+            case WM_EXITSIZEMOVE:       return app->on_exitsizemove(hwnd);
+            case WM_TRAYICON:           return app->on_trayicon(lparam);
+            case WM_COMMAND:            return app->on_command(hwnd, wparam);
+            case WM_PUSH_TO_FRONTEND:   return app->on_push_to_frontend(lparam);
+            default:                    break;
         }
         return DefWindowProc(hwnd, msg, wparam, lparam);
     }
@@ -375,6 +450,27 @@ public:
     void set_initial_rect(int x, int y, int w, int h) { init_x_ = x; init_y_ = y; width_ = w; height_ = h; }
     void set_close_to_tray(bool v) { close_to_tray_ = v; }
     void set_devtools_enabled(bool v) { devtools_enabled_ = v; }
+    // Fires on the UI thread when the frontend posts {"type":"ready"} after
+    // mount. The callback typically posts a strand task that calls
+    // process_projection::replay_to_frontend to deliver the current snapshot.
+    void set_on_ready(std::function<void()> callback) { on_ready_ = std::move(callback); }
+
+    // frontend_push_sink — callable from any thread. Marshals onto the UI
+    // thread via PostMessageW, where on_push_to_frontend takes ownership
+    // of the payload and forwards via PostWebMessageAsJson.
+    void push(std::string_view event, std::string json_body) override {
+        if (!hwnd_) return;
+        auto p = std::make_unique<push_payload>();
+        p->event.assign(event.data(), event.size());
+        p->json_body = std::move(json_body);
+        PC_LOG_INFO("[DIAG-PUSH] queued event={} bytes={}", p->event, p->json_body.size());
+
+        LPARAM lp = reinterpret_cast<LPARAM>(p.release());
+        if (!::PostMessageW(hwnd_, WM_PUSH_TO_FRONTEND, 0, lp)) {
+            // HWND invalid (shutdown / not yet created): take ownership back.
+            delete reinterpret_cast<push_payload*>(lp);
+        }
+    }
 
     bool create(HINSTANCE hinstance) {
         WNDCLASSEXW wc = {};

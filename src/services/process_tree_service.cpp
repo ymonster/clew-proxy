@@ -46,23 +46,6 @@ std::pair<std::string, std::string> query_process_detail_impl(DWORD pid) {
 process_tree_service::process_tree_service(strand_bound_manager& exec)
     : exec_(exec) {}
 
-void process_tree_service::set_snapshot_getter(snapshot_fn fn) {
-    snapshot_getter_ = std::move(fn);
-}
-
-std::shared_ptr<const std::string> process_tree_service::tree_snapshot() const {
-    if (snapshot_getter_) {
-        auto p = snapshot_getter_();
-        if (p) return p;
-    }
-    // Fallback: materialize via strand. Used when projection is not yet
-    // wired (early startup) or in the Stage 2 skeleton.
-    auto snap = exec_.query([](const domain::process_tree_manager& m) -> std::string {
-        return process_tree_to_json_string(m.tree(), m.rules());
-    });
-    return std::make_shared<const std::string>(std::move(snap));
-}
-
 nlohmann::json process_tree_service::find_process(std::uint32_t pid) const {
     auto result = exec_.query([pid](const domain::process_tree_manager& m) -> nlohmann::json {
         const auto& tree = m.tree();

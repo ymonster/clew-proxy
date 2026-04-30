@@ -7,19 +7,27 @@
 // and are expected to outlive the manager (main.cpp owns both).
 // All receiver methods are invoked on the manager's strand.
 
+#include <cstdint>
+
 namespace clew {
+
+// Push urgency hint forwarded from notify_tree_changed call sites to
+// downstream listeners (projection). User-driven mutations want
+// `immediate` so the UI reflects an action right away; ETW storms and
+// the periodic reconcile pass use `batched` so the projection can
+// coalesce many events into one push.
+enum class push_urgency : std::uint8_t {
+    immediate,
+    batched,
+};
 
 class tree_change_receiver {
 public:
     virtual ~tree_change_receiver() = default;
 
     // Called after any tree mutation (ETW process start/stop, manual hijack,
-    // rule apply). Fired inside the manager's strand. The previously
-    // separate on_process_exit hook has been removed: a STOP already runs
-    // through this same notify path, and the projection has no state to
-    // update for an exit beyond the snapshot rebuild that on_tree_changed
-    // already does.
-    virtual void on_tree_changed() = 0;
+    // rule apply). Fired inside the manager's strand.
+    virtual void on_tree_changed(push_urgency urgency) = 0;
 };
 
 } // namespace clew

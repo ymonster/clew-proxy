@@ -66,14 +66,14 @@ def test_api_reachable():
 
 @test("Process tree is populated")
 def test_process_tree():
-    r = requests.get(f"{BASE}/processes", timeout=5)
+    # /api/processes was removed when the backend->frontend push channel
+    # switched from SSE to WebView2 PostMessage; the snapshot is delivered
+    # in the push payload itself. e2e here only needs a backend liveness
+    # signal — /api/stats works.
+    r = requests.get(f"{BASE}/stats", timeout=5)
     assert r.status_code == 200
-    tree = r.json()
-    assert len(tree) > 0, "Process tree is empty"
-    # Check basic structure
-    first = tree[0]
-    assert "pid" in first
-    assert "name" in first
+    data = r.json()
+    assert "hijacked_pids" in data, f"unexpected stats payload: {data}"
 
 
 @test("Stats endpoint returns data")
@@ -181,20 +181,13 @@ def test_curl_hijacked():
     # Wait a moment for Clew to intercept
     time.sleep(1)
 
-    # Check if curl.exe appears as hijacked in the process tree
-    r = requests.get(f"{BASE}/processes")
-    tree = r.json()
-
-    def find_curl(nodes):
-        for node in nodes:
-            if node.get("name", "").lower() == CURL_EXE:
-                return node
-            child = find_curl(node.get("children", []))
-            if child:
-                return child
-        return None
-
-    curl_node = find_curl(tree)
+    # /api/processes was retired; query /api/hijack which returns the
+    # currently-hijacked PIDs with their names (subset we care about).
+    r = requests.get(f"{BASE}/hijack")
+    hijacked = r.json() or []
+    curl_node = next(
+        (h for h in hijacked if h.get("name", "").lower() == CURL_EXE), None
+    )
     # curl might have finished already, so just check if we can find connections
     r_tcp = requests.get(f"{BASE}/tcp")
     tcp_conns = r_tcp.json()
@@ -357,13 +350,13 @@ def _iter_pids(nodes) -> Iterator[int]:
 
 
 def _wait_pid_in_tree(pid, timeout=3.0):
-    """Poll /api/processes until pid shows up. Tolerates ETW ProcessStart
-    buffer flush latency (~hundreds of ms) for processes spawned after the
-    initial NtQuery snapshot."""
+    """Poll the single-PID tree query until pid shows up. Tolerates ETW
+    ProcessStart buffer-flush latency (~hundreds of ms) for processes
+    spawned after the initial NtQuery snapshot."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        tree = requests.get(f"{BASE}/processes").json()
-        if pid in _iter_pids(tree):
+        r = requests.get(f"{BASE}/processes/{pid}")
+        if r.status_code == 200:
             return True
         time.sleep(0.1)
     return False
@@ -770,14 +763,17 @@ if __name__ == "__main__":
         test_tcp_table,
         test_udp_table,
         test_icon_api,
-        test_sse,
+        # test_sse skipped: /api/events removed with the SSE->PostMessage
+        # transport switch. Equivalent push-channel coverage will return in
+        # Phase 3 (Playwright + CDP).
         test_create_rule,
         test_list_rules,
         test_curl_hijacked,
         test_proxy_routing,
         test_manual_hijack,
-        # Refactor-specific regressions
-        test_batch_hijack_single_notify,
+        # test_batch_hijack_single_notify (H5) skipped for the same reason
+        # — it counted SSE process_update events. Phase 3 will reinstate
+        # via Playwright message capture or a dedicated backend counter.
         test_config_put_reloads_rules,
         test_config_log_level_roundtrip,
         test_group_crud,

@@ -30,14 +30,13 @@
 #include <vector>
 
 #include "config/types.hpp"              // AutoRule
+#include "domain/tree_change_receiver.hpp" // push_urgency + tree_change_receiver
 #include "process/etw_consumer.hpp"      // etw_consumer + etw_process_event
 #include "process/flat_tree.hpp"
 #include "process/ntquery_snapshot.hpp"  // raw_process_record + ntquery_enumerate_processes
 #include "rules/rule_engine_v3.hpp"
 
 namespace clew {
-
-class tree_change_receiver;
 
 namespace domain {
 
@@ -102,7 +101,13 @@ private:
     // "rule_unexclude" / "auto_rules_apply" / "init" / "reconcile") used by
     // the [DIAG-NOTIFY] log line so we can attribute SSE broadcast pressure
     // to its origin. Caller must pass a string with static lifetime (literal).
-    void notify_tree_changed(std::string_view source);
+    //
+    // `urgency` controls whether the projection layer pushes immediately
+    // (user-driven actions: hijack, unhijack, rule edit) or coalesces with
+    // a small window (background ETW storms, periodic reconcile). Required
+    // explicit at every call site — there is intentionally no default so
+    // future call sites must make a deliberate choice.
+    void notify_tree_changed(std::string_view source, push_urgency urgency);
 
     void apply_etw_event_locked(const etw_process_event& evt);
     void build_initial_tree(const std::vector<raw_process_record>& snapshot);

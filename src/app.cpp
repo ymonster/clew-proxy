@@ -40,8 +40,8 @@ app::app(const cli_options& opts, HINSTANCE hinstance)
     , dns_mgr_(ioc_)
     , acceptor_(ioc_, *port_tracker_, strand_, tcp_groups_)
     , socks5_udp_mgr_(ioc_, udp_groups_)
-    , projection_(tree_mgr_, sse_)
-    , cfg_bridge_(cfg_store_, sse_)
+    , projection_(tree_mgr_, strand_)
+    , cfg_bridge_(cfg_store_)
     , config_svc_(cfg_store_)
     , connection_svc_(exec_, udp_port_tracker_.get())
     , group_svc_(exec_, cfg_store_)
@@ -57,7 +57,6 @@ app::app(const cli_options& opts, HINSTANCE hinstance)
         .processes   = process_svc_,
         .rules       = rule_svc_,
         .stats       = stats_svc_,
-        .sse         = sse_,
       }
     , api_server_(API_PORT, ctx_, opts_.static_dir)
 {
@@ -89,11 +88,23 @@ app::app(const cli_options& opts, HINSTANCE hinstance)
     icons_.init();
 
     tree_mgr_.add_listener(&projection_);
-    process_svc_.set_snapshot_getter([this]() { return projection_.tree_snapshot(); });
 
     wire_observers();
 
     gui_ = create_gui();
+
+    // Wire backend->frontend push channel. The WebView2 host implements the
+    // sink; setting it on projection / cfg_bridge enables broadcast. The
+    // ready-handshake callback runs on the UI thread; replay_to_frontend
+    // reads the atomic snapshot (no strand needed) and pushes back through
+    // the same WM_PUSH_TO_FRONTEND marshalling path.
+    if (gui_) {
+        projection_.set_sink(gui_.get());
+        cfg_bridge_.set_sink(gui_.get());
+        gui_->set_on_ready([this]() {
+            projection_.replay_to_frontend();
+        });
+    }
 }
 
 app::~app() noexcept {
@@ -155,7 +166,23 @@ std::unique_ptr<webview_app> app::create_gui() {
     }
 
     const auto&  ui_cfg = config_.get_v2().ui;
-    std::wstring url    = std::format(L"http://127.0.0.1:{}/", API_PORT);
+    // CLEW_DEV_URL lets a developer point the embedded WebView2 at a Vite
+    // dev server (e.g. http://localhost:5173) for HMR-driven frontend work.
+    // Production builds always navigate to the embedded static files served
+    // by the local HTTP API. WebView2 still provides PostWebMessageAsJson
+    // regardless of which page is loaded.
+    std::wstring url;
+    if (auto* dev = std::getenv("CLEW_DEV_URL"); dev && *dev) {
+        const int wlen = MultiByteToWideChar(CP_UTF8, 0, dev, -1, nullptr, 0);
+        if (wlen > 0) {
+            url.resize(static_cast<size_t>(wlen - 1));
+            MultiByteToWideChar(CP_UTF8, 0, dev, -1, url.data(), wlen);
+            PC_LOG_INFO("CLEW_DEV_URL set; loading dev frontend from {}", dev);
+        }
+    }
+    if (url.empty()) {
+        url = std::format(L"http://127.0.0.1:{}/", API_PORT);
+    }
     auto gui = std::make_unique<webview_app>(url, ui_cfg.window_width, ui_cfg.window_height);
     gui->set_title(L"Clew");
     gui->set_initial_rect(ui_cfg.window_x, ui_cfg.window_y,
@@ -291,7 +318,6 @@ void app::shutdown() noexcept {
     PC_LOG_INFO("io_context stopped, {} workers joined", num_workers_);
 
     tree_mgr_.stop();
-    sse_.stop();
 
     icons_.shutdown();
     quill::Backend::stop();

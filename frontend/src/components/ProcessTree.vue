@@ -1,12 +1,17 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
-import { getProcesses, hijackProcess, unhijackProcess, getTcpConnections } from '@/api/client'
-import { useSSE } from '@/api/sse'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { hijackProcess, unhijackProcess, getTcpConnections } from '@/api/client'
+import { useNotifications } from '@/api/notify'
 import type { ProcessInfo } from '@/api/types'
 import { Search, Monitor } from 'lucide-vue-next'
 import ProcessTreeNode from './ProcessTreeNode.vue'
 
-const sse = useSSE()
+const notify = useNotifications()
+
+// Process tree is a shared ref maintained by notify.ts: every backend
+// `process_update` push replaces it with a fresh snapshot. We bind the
+// component's `processes` view to it directly — no fetch, no polling.
+const processes = notify.tree
 
 const ACTIVITY_TIMEOUT_MS = 30_000
 
@@ -15,12 +20,11 @@ const emit = defineEmits<{
 }>()
 
 // --- State ---
-const processes = ref<ProcessInfo[]>([])
 const searchQuery = ref('')
 const filterTab = ref<'all' | 'proxied' | 'direct'>('all')
 const expandedPids = ref<Set<number>>(new Set())
 const selectedPid = ref<number | null>(null)
-let refreshTimer: ReturnType<typeof setInterval> | null = null
+let activityTimer: ReturnType<typeof setInterval> | null = null
 
 // --- Activity tracking ---
 const lastActivityByPid = ref(new Map<number, number>())
@@ -51,45 +55,17 @@ function isPidActive(pid: number): boolean {
   return Date.now() - lastSeen < ACTIVITY_TIMEOUT_MS
 }
 
-// --- Data fetching ---
-async function fetchProcesses() {
-  try {
-    processes.value = await getProcesses()
-  } catch {
-    // Backend not available
-  }
-}
-
-// Polling strategy:
-// - fetchActivity polls /api/tcp (no SSE coverage) every 10s, always.
-// - fetchProcesses is normally driven by SSE (process_update/exit events via
-//   App.vue calling our exposed fetchProcesses). Only when SSE is disconnected
-//   do we fall back to our own periodic processes poll.
-function startTimer() {
-  if (refreshTimer) clearInterval(refreshTimer)
-  refreshTimer = setInterval(() => {
-    fetchActivity()
-    if (!sse.connected.value) fetchProcesses()
-  }, 10000)
-}
-
 onMounted(() => {
-  fetchProcesses()
   fetchActivity()
-  startTimer()
+  // /api/tcp is still polled (per-connection metadata is high-frequency
+  // and tab-scoped, not part of the tree push payload).
+  activityTimer = setInterval(fetchActivity, 10_000)
 })
-
-watch(() => sse.connected.value, () => {
-  // Restart timer so the interval body re-evaluates whether to poll processes.
-  startTimer()
-})
-
-defineExpose({ fetchProcesses })
 
 onUnmounted(() => {
-  if (refreshTimer) {
-    clearInterval(refreshTimer)
-    refreshTimer = null
+  if (activityTimer) {
+    clearInterval(activityTimer)
+    activityTimer = null
   }
 })
 
@@ -189,26 +165,20 @@ function selectAllProcesses() {
 const isAllSelected = computed(() => selectedPid.value === null)
 
 // --- Context menu actions ---
-// Hack = tree mode by default (backend handles tree expansion)
+// Hack = tree mode by default (backend handles tree expansion).
+// No explicit re-fetch: backend's projection pushes a fresh snapshot
+// after the strand applies the mutation; notify.ts swaps it into the
+// shared `tree` ref and Vue re-renders.
 async function hackProcess(pid: number) {
-  try {
-    await hijackProcess(pid)  // default tree=true
-    await fetchProcesses()
-  } catch {}
+  try { await hijackProcess(pid) } catch {}
 }
 
 async function unhackProcess(pid: number) {
-  try {
-    await unhijackProcess(pid)  // default tree=false (single)
-    await fetchProcesses()
-  } catch {}
+  try { await unhijackProcess(pid) } catch {}
 }
 
 async function unhackTree(node: ProcessInfo) {
-  try {
-    await unhijackProcess(node.pid, true)  // tree=true (cascade)
-    await fetchProcesses()
-  } catch {}
+  try { await unhijackProcess(node.pid, true) } catch {}
 }
 
 // --- Hijacked status helpers ---

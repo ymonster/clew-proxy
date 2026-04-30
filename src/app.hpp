@@ -45,7 +45,6 @@
 #include "services/rule_service.hpp"
 #include "services/stats_service.hpp"
 #include "transport/http_api_server.hpp"
-#include "transport/sse_hub.hpp"
 #include "udp/socks5_udp_manager.hpp"
 #include "udp/udp_port_tracker.hpp"
 #include "udp/udp_relay.hpp"
@@ -133,7 +132,6 @@ private:
 
     icon_cache icons_;
 
-    sse_hub            sse_;
     process_projection projection_;
     config_sse_bridge  cfg_bridge_;
 

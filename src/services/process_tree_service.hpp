@@ -2,15 +2,13 @@
 
 // process_tree_service — process tree queries + hijack/unhijack CRUD.
 //
-// tree_snapshot() returns an immutable shared_ptr<const string> of the
-// tree JSON, maintained by process_projection (Stage 3). Stage 2 wires
-// the getter as null; handlers then fall back to building via strand
-// (see query_tree_snapshot).
+// The full-tree snapshot path (formerly served via /api/processes) was
+// removed when the backend->frontend push channel switched from SSE to
+// WebView2 PostMessage; the snapshot is now delivered straight inside
+// each push payload by process_projection. Per-PID query and hijack
+// CRUD remain HTTP.
 
 #include <cstdint>
-#include <functional>
-#include <memory>
-#include <string>
 #include <string_view>
 #include <vector>
 
@@ -22,19 +20,10 @@ namespace clew {
 
 class process_tree_service {
 public:
-    using snapshot_fn = std::function<std::shared_ptr<const std::string>()>;
-
     explicit process_tree_service(strand_bound_manager& exec);
 
     process_tree_service(const process_tree_service&)            = delete;
     process_tree_service& operator=(const process_tree_service&) = delete;
-
-    // Injected by main.cpp after process_projection is constructed. Before
-    // injection, tree_snapshot() falls back to computing via strand.
-    void set_snapshot_getter(snapshot_fn fn);
-
-    // /api/processes — full tree JSON snapshot
-    [[nodiscard]] std::shared_ptr<const std::string> tree_snapshot() const;
 
     // /api/processes/:pid
     [[nodiscard]] nlohmann::json find_process(std::uint32_t pid) const;
@@ -55,7 +44,6 @@ public:
 
 private:
     strand_bound_manager& exec_;
-    snapshot_fn           snapshot_getter_;
 };
 
 } // namespace clew

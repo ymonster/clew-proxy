@@ -1,10 +1,4 @@
 <script setup lang="ts">
-declare global {
-  interface Window {
-    chrome?: { webview?: { postMessage(msg: string): void } }
-  }
-}
-
 import { ref, onMounted, onUnmounted, shallowRef, defineAsyncComponent } from 'vue'
 import { Tabs, TabsContent } from '@/components/ui/tabs'
 import { TooltipProvider } from '@/components/ui/tooltip'
@@ -16,7 +10,7 @@ import ProxiesTab from '@/components/ProxiesTab.vue'
 const ConfigEditor = defineAsyncComponent(() => import('@/components/ConfigEditor.vue'))
 import RuleEditorDialog from '@/components/RuleEditorDialog.vue'
 import { getStats, getProcessDetail, createAutoRule, updateAutoRule, deleteAutoRule } from '@/api/client'
-import { useSSE } from '@/api/sse'
+import { useNotifications } from '@/api/notify'
 import { useTheme } from '@/composables/useTheme'
 import { useStatusBus } from '@/composables/useStatusBus'
 import { CLEW_VERSION } from '@/version'
@@ -110,12 +104,14 @@ async function onRuleDeleteFromDialog(id: string) {
   }
 }
 
-const processTreeRef = ref<InstanceType<typeof ProcessTree> | null>(null)
+const notify = useNotifications()
 
-const sse = useSSE()
-
-sse.on('process_update', () => {
-  processTreeRef.value?.fetchProcesses()
+// Tree state arrives via WebView2 PostMessage and is auto-applied to
+// notify.tree by the dispatcher in notify.ts; ProcessTree binds to it
+// directly. We still re-fetch the selected process's detail (cmdline +
+// image_path are not in the push payload) so ProcessContextHeader picks
+// up updated hijack_source / group_id immediately.
+notify.on('process_update', () => {
   refreshSelectedProcess()
 })
 
@@ -253,7 +249,7 @@ onUnmounted(() => {
 
         <!-- ==================== LEFT SIDEBAR ==================== -->
         <aside class="relative flex flex-col border-r border-slate-200 dark:border-slate-800 shrink-0 bg-slate-50 dark:bg-[#18181b]/50 transition-colors" style="width: 300px; min-width: 200px;">
-          <ProcessTree ref="processTreeRef" class="flex-1 min-h-0" @select="onSelectProcess" />
+          <ProcessTree class="flex-1 min-h-0" @select="onSelectProcess" />
         </aside>
 
         <!-- ==================== RIGHT MAIN AREA ==================== -->
@@ -336,13 +332,13 @@ onUnmounted(() => {
           {{ statusMessage.text }}
         </div>
         <div class="flex items-center gap-6">
-          <div v-if="sse.connected.value" class="flex items-center gap-1.5">
+          <div v-if="notify.connected.value" class="flex items-center gap-1.5">
             <div class="w-1.5 h-1.5 rounded-full bg-emerald-500 dark:bg-emerald-400" />
-            <span>SSE Connected</span>
+            <span>Connected</span>
           </div>
           <div v-else class="flex items-center gap-1.5 text-red-400">
             <div class="w-1.5 h-1.5 rounded-full bg-red-500" />
-            <span>SSE Disconnected</span>
+            <span>Disconnected</span>
           </div>
         </div>
       </footer>

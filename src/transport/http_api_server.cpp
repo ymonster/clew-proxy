@@ -25,7 +25,6 @@ void register_icon_handlers(route_registry&);
 void register_process_handlers(route_registry&);
 void register_rule_handlers(route_registry&);
 void register_shell_handlers(route_registry&);
-void register_sse_handlers(route_registry&);
 void register_stats_handlers(route_registry&);
 } // namespace clew
 
@@ -37,6 +36,8 @@ http_api_server::http_api_server(int port, api_context& ctx, std::string static_
     , ctx_(ctx) {
     // Expand the thread pool beyond httplib's default 8 so long-lived SSE
     // connections don't starve regular requests.
+    // After SSE was retired the long-lived /api/events provider thread is
+    // gone, so the original 32-worker pool is overkill, but harmless.
     server_.new_task_queue = [] { return new httplib::ThreadPool(32); };
 
     install_default_headers(server_);
@@ -51,7 +52,6 @@ http_api_server::http_api_server(int port, api_context& ctx, std::string static_
     clew::register_process_handlers(reg);
     clew::register_rule_handlers(reg);
     clew::register_shell_handlers(reg);
-    clew::register_sse_handlers(reg);
     clew::register_stats_handlers(reg);
 
     setup_static_files();

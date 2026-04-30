@@ -18,14 +18,9 @@ namespace clew {
 
 namespace {
 
-void handle_list_processes(const httplib::Request&, httplib::Response& res, const api_context& ctx) {
-    auto snap = ctx.processes.tree_snapshot();
-    if (!snap) {
-        write_json_text(res, "[]");
-        return;
-    }
-    write_json_text(res, *snap);
-}
+// Note: GET /api/processes was removed when the backend->frontend push
+// channel switched to WebView2 PostMessage. The full snapshot is delivered
+// inside each `process_update` push; the frontend never polls for the tree.
 
 void handle_process_by_pid(const httplib::Request& req, httplib::Response& res, const api_context& ctx) {
     auto pid = parse_match_u32(req, 1, "pid");
@@ -75,7 +70,6 @@ void handle_batch_hijack(const httplib::Request& req, httplib::Response& res, co
 
 void register_process_handlers(route_registry& r) {
     using enum http_method;
-    r.add({get,     "/api/processes",                       &handle_list_processes});
     r.add({get,     R"(/api/processes/(\d+))",              &handle_process_by_pid});
     r.add({get,     R"(/api/processes/(\d+)/detail)",       &handle_process_detail});
     r.add({get,     "/api/hijack",                          &handle_list_hijacked});

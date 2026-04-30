@@ -100,7 +100,6 @@ set(CLEW_SOURCES
     src/services/stats_service.cpp
     src/projection/process_projection.cpp
     src/projection/config_sse_bridge.cpp
-    src/transport/sse_hub.cpp
     src/transport/response_utils.cpp
     src/transport/middleware.cpp
     src/transport/route_registry.cpp
@@ -112,7 +111,6 @@ set(CLEW_SOURCES
     src/transport/handlers/process_handlers.cpp
     src/transport/handlers/rule_handlers.cpp
     src/transport/handlers/shell_handlers.cpp
-    src/transport/handlers/sse_handlers.cpp
     src/transport/handlers/stats_handlers.cpp
 )
 

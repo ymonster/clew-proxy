@@ -39,10 +39,9 @@ async function requestVoid(url: string, options?: RequestInit): Promise<void> {
 }
 
 // -- Processes --
-
-export function getProcesses(): Promise<ProcessInfo[]> {
-  return request<ProcessInfo[]>('/processes')
-}
+// Note: bulk tree retrieval (formerly GET /api/processes) is delivered via
+// WebView2 PostMessage; subscribe through useNotifications() in api/notify.ts
+// to read `tree`. /detail endpoints remain for cmdline + image_path fetches.
 
 export function getProcessDetail(pid: number): Promise<ProcessInfo> {
   return request<ProcessInfo>(`/processes/${pid}/detail`)
