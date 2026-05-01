@@ -53,9 +53,16 @@ const dnsMode = ref('forwarder')
 const dnsUpstream = ref('')
 const dnsSaveMessage = ref<string | null>(null)
 
+// Log level — quill switches at runtime via clew::set_log_level (wired in
+// app.cpp's config_store observer chain). Changing this dropdown reloads
+// the live process; no restart needed.
+const logLevel = ref('info')
+const logLevelMessage = ref<string | null>(null)
+
 // a11y: unique ids for label/field association
 const dnsModeId = useId()
 const dnsUpstreamId = useId()
+const logLevelId = useId()
 
 const hasUnsavedChanges = computed(() => {
   return currentContent.value !== savedContent.value
@@ -75,6 +82,8 @@ async function fetchConfig(options: { pushToEditor?: boolean } = {}) {
       dnsMode.value = (dns.mode as string) || 'forwarder'
       dnsUpstream.value = (dns.upstream_host as string) || ''
     }
+    const lvl = (config as Record<string, unknown>).log_level as string | undefined
+    if (lvl) logLevel.value = lvl
     // Only overwrite the Monaco editor when explicitly requested (initial open),
     // OR when there are no unsaved local edits. Otherwise preserve user's work.
     const shouldPush = options.pushToEditor === true
@@ -86,6 +95,20 @@ async function fetchConfig(options: { pushToEditor?: boolean } = {}) {
     }
   } catch {
     // Backend not available
+  }
+}
+
+async function saveLogLevel() {
+  logLevelMessage.value = null
+  try {
+    const config = await getConfig() as Record<string, unknown>
+    config.log_level = logLevel.value
+    await updateConfig(config)
+    logLevelMessage.value = 'Saved'
+    setTimeout(() => { logLevelMessage.value = null }, 2000)
+    await fetchConfig()
+  } catch {
+    logLevelMessage.value = 'Save failed'
   }
 }
 
@@ -378,6 +401,34 @@ onUnmounted(() => {
                 <span class="text-xs text-slate-500 dark:text-slate-400 font-mono">:53</span>
               </div>
               <p v-if="dnsSaveMessage" class="text-xs text-green-500">{{ dnsSaveMessage }}</p>
+            </div>
+          </div>
+
+          <!-- Log Level -->
+          <div class="px-4 py-3 bg-white dark:bg-[#18181b]">
+            <div class="flex items-center justify-between">
+              <div>
+                <p class="text-sm font-medium text-slate-700 dark:text-slate-200">Log Level</p>
+                <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                  Runtime log verbosity. Switching takes effect immediately, no restart needed.
+                  <code class="font-mono">debug</code> writes per-event diagnostics to <code class="font-mono">clew.log</code>.
+                </p>
+              </div>
+              <div class="flex items-center gap-2 ml-4 shrink-0">
+                <Label :for="logLevelId" class="sr-only">Log level</Label>
+                <select
+                  :id="logLevelId"
+                  v-model="logLevel"
+                  @change="saveLogLevel"
+                  class="h-8 px-2 text-sm border border-slate-200 dark:border-slate-700 rounded bg-slate-50 dark:bg-[#101922] text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                >
+                  <option value="debug">debug</option>
+                  <option value="info">info</option>
+                  <option value="warning">warning</option>
+                  <option value="error">error</option>
+                </select>
+                <span v-if="logLevelMessage" class="text-xs text-green-500">{{ logLevelMessage }}</span>
+              </div>
             </div>
           </div>
         </div>
