@@ -150,9 +150,10 @@ Replaces the earlier SSE / `EventSource` channel. Push events flow:
 
 1. A domain mutation (ETW process start/stop, manual hijack, rule reload) calls
    `process_tree_manager::notify_tree_changed(urgency)` on the strand.
-2. `process_projection::on_tree_changed` rebuilds the atomic snapshot.
-   `push_urgency::immediate` flushes right away; `push_urgency::batched` arms
-   a 100 ms strand timer so successive events coalesce into a single push.
+2. `process_projection::on_tree_changed` rebuilds the atomic snapshot and
+   pushes immediately (default build). The `push_urgency` hint distinguishes
+   user actions (`immediate`) from background ETW (`batched`); see "Coalescing"
+   below for the optional compile-time switch.
 3. Projection calls `frontend_push_sink::push("process_update", json)`.
 4. `webview_app::push` allocates a `push_payload` and posts a custom
    `WM_PUSH_TO_FRONTEND` to the UI thread, so cross-thread marshalling is
@@ -162,8 +163,9 @@ Replaces the earlier SSE / `EventSource` channel. Push events flow:
 6. Frontend's `notify.ts` listens on `chrome.webview` `message` events and
    updates the shared Vue refs (`tree`, etc.); components consume them
    directly.
-7. Initial sync: when the frontend mounts it posts `{type: 'ready'}` back
-   through `chrome.webview.postMessage`. The host invokes
+7. Initial sync: when the frontend mounts (or when visibility transitions
+   from hidden back to visible) it posts `{type: 'ready'}` back through
+   `chrome.webview.postMessage`. The host invokes
    `process_projection::replay_to_frontend` to re-push the latest snapshot.
 
 Why this transport:
@@ -182,6 +184,60 @@ removed because the snapshot now arrives inside every `process_update` push;
 nothing on the frontend needs to fetch the full tree any more. `/api/processes/:pid`
 and `/api/processes/:pid/detail` are kept because they answer single-record
 questions that the push channel does not duplicate.
+
+#### Coalescing — opt-in compile switch (`CLEW_PROJECTION_COALESCE`)
+
+Default build does **no** coalescing — every ETW event triggers an immediate
+refresh + push. Snappy at any normal tree size: `process_tree_to_json_string`
+costs ~2 µs per process, ETW arrival rate on a quiet box is typically <30/sec,
+so strand utilisation stays under 1% even with 1000 live processes.
+
+`cmake -DCLEW_PROJECTION_COALESCE=ON` enables a 100 ms refresh-coalesce
+window for `batched` urgency. The fix-it-properly version (refresh **inside**
+the timer callback, not per-event) is what's compiled in — bursts of hundreds
+of ETW events collapse to a single refresh + push at the end of the window.
+`immediate` urgency (user-driven) still bypasses the timer regardless.
+
+When to enable: only if a real workload generates sudden +1000-process
+bursts (large parallel build, runaway spawn) where the strand budget matters.
+The trade-off is up to 100 ms of tree-update lag for batched events. For
+characterisation use `tests/stress_etw.py` + `tests/stress_backend.py` (see
+the "Build notes" section).
+
+### Visibility gate — minimize / tray drops backend work
+
+When the WebView2 host is hidden (window minimized or in the tray), the
+backend stops doing tree-snapshot work entirely. Implementation:
+
+1. `webview_app::set_visible(bool)` is the single chokepoint. It's called
+   from `WM_SIZE` (SIZE_MINIMIZED → false, SIZE_RESTORED / SIZE_MAXIMIZED →
+   true), `on_close` close-to-tray (false), and `restore_window` (true).
+   It toggles `ICoreWebView2Controller::IsVisible` (so `document.visibilityState`
+   in the embedded page tracks reality) and fires a registered
+   `on_visibility_change_` callback. Idempotent — repeated calls with the
+   same state are no-ops, which matters for `WM_SIZE` chatter.
+2. `app::wire_observers` wires the callback to
+   `process_projection::set_frontend_visible(bool)`, which stores into a
+   `std::atomic<bool> frontend_visible_` (relaxed memory order — this is
+   a hint, not a strict barrier).
+3. `process_projection::on_tree_changed` checks the flag at the very top
+   and early-returns when hidden. No `refresh_snapshot`, no PostMessage,
+   no V8 wake-up. The strand is free to serve other work (in practice
+   there's nothing else to serve while the user has the window away).
+4. The frontend `useDocumentVisibility` composable mirrors the gate on the
+   client side: the three remaining polled endpoints (`/api/stats`,
+   `/api/tcp`, `/api/udp` via `fetchActivity` / `fetchConnections` /
+   `fetchStatus`) suspend their `setInterval` while hidden.
+5. When the host returns to visible, `set_visible(true)` does NOT replay
+   automatically — instead, the frontend's `visibilitychange` handler
+   re-posts `{type: 'ready'}`, which drives the existing replay path
+   (`process_projection::replay_to_frontend`). The frontend gets a full
+   fresh snapshot in one shot.
+
+Net effect (measured under sustained 270 ETW events/sec at tree=1200):
+strand utilisation 48% visible → 0.0% hidden, hijack wait_us tail 940 ms →
+92 µs (any user CRUD waiting in the queue still completes; just nothing
+new piling up). See `memory/MEMORY.md` for the v0.8.9 release notes.
 
 ### Frontend HTTP CRUD: empty `body: ''` on DELETE
 
@@ -367,11 +423,37 @@ Push events (delivered via `WM_PUSH_TO_FRONTEND` → `PostWebMessageAsJson`,
 - **Run** (admin required): `.\build\Release\clew.exe`
 - **Frontend dev**: `cd frontend && npm run dev`
 - **Frontend build**: `cd frontend && npm run build`
+- **Opt-in: refresh-coalesce window** (perf experimentation only, default OFF):
+  `cmake -DCLEW_PROJECTION_COALESCE=ON build` then rebuild. Enables a 100 ms
+  refresh-coalesce timer for `batched` urgency events (see "Coalescing" in
+  Key Architectural Decisions).
 
 ## Build notes
 
 - WinDivert + `SetInterfaceDnsSettings` both require administrator privileges. The UAC manifest is embedded via linker `/MANIFESTUAC:level='requireAdministrator'` (see `CMakeLists.txt`) — double-click triggers UAC prompt automatically.
 - ~30 translation units after the three-layer refactor (was a single TU in the legacy header-only layout). `CMakeLists.txt` enables `/MP` for parallel compilation; first clean build is noticeably longer than the legacy version, incremental builds are fine.
 - Frontend builds to static files served by cpp-httplib at runtime; dev mode uses Vite's proxy to port 18080.
+- **Launch with the right cwd**: clew's HTTP server uses relative path `./frontend/dist`. Launching the binary from outside the repo root (e.g. via Bash with `cwd=elsewhere`) silently serves whatever `./frontend/dist` resolves to in the launching shell's directory — easy way to get an empty / stale UI. Use `(cd <repo> && ./build/Release/clew.exe)` or `subprocess.Popen(..., cwd=<repo>)`.
 - Kill `clew.exe` before rebuilding (MSVC LNK1104 error otherwise).
-- `bash scripts/verify.sh` runs frontend build + cpp build + 7 layering grep guards + the HTTP e2e suite (`run_all.py`) + the Playwright + WebView2 e2e suite (`run_pw.py`) as a single command. Requires an administrator shell (clew.exe needs elevation), `npm` for the frontend build, and `uv` for the PEP 723 inline-deps Playwright runner.
+- `bash scripts/verify.sh` runs frontend build + cpp build + 7 layering grep guards + the HTTP e2e suite (`run_all.py`) + the Playwright + WebView2 e2e suite (`run_pw.py`) as a single command, each stage wrapped with a per-stage `timeout` so a single hung step aborts cleanly. Requires an administrator shell (clew.exe needs elevation), `npm` for the frontend build, and `uv` for the PEP 723 inline-deps Playwright runner.
+
+### Performance harness (no Playwright)
+
+For perf characterisation independent of the Playwright runner (which itself
+competes with V8 main-thread push processing under load):
+
+- `tests/stress_etw.py` — PEP 723 ETW churn driver. Maintains a target
+  population of short-lived `cmd.exe /c ping ...` children so Windows
+  continuously fires ProcessStart / ProcessStop events. Each child = 2 OS
+  processes (cmd + ping) so `--target N` produces ~2N stress processes plus
+  ambient. Knobs: `--target / --min-life / --max-life / --duration`.
+- `tests/stress_backend.py` — pure-Python perf measurement. Spawns
+  stress_etw, exercises hijack via HTTP at a configurable cadence, scans
+  `clew.log` for instrumentation traces in the measured wall-clock window,
+  reports per-stage timing distributions (refresh_us / push_us / strand
+  wait_us / hijack RTT). Optional `--visibility-cycle` to drive minimize
+  / restore mid-test via `WM_SYSCOMMAND` and bucket pre / hidden / post
+  metrics — useful for verifying the visibility gate.
+
+Neither harness is part of `verify.sh` (they're for ad-hoc characterisation,
+not regression).
