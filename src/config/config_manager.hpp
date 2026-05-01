@@ -28,6 +28,14 @@ public:
             PC_LOG_INFO("Config file not found, using defaults");
             v2_config_ = ConfigV2{};
             has_v2_ = true;
+            // ConfigV2{} default-constructs proxy_groups as empty; without
+            // this call the on-disk file would also be persisted with an
+            // empty proxy_groups array, leaving id=0 ("default") absent
+            // until the next launch (which would re-load and run
+            // ensure_proxy_groups()). Was harmless when cwd was the
+            // project root (config always existed there), but became
+            // visible once main.cpp pinned cwd to the exe directory.
+            ensure_proxy_groups();
             return save();
         }
 

@@ -102,6 +102,18 @@ Rules 标签页
 - DNS 查询走 SOCKS5 到上游（默认 8.8.8.8）
 - 关闭 / 退出自动还原系统 DNS；异常退出下次启动会检测残留并恢复
 
+### 5. 开机自动启动（默认关闭）
+
+Clew 运行需要管理员权限（驱动级流量拦截）。如果走注册表 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`，每次开机会弹 UAC 确认窗口，体验差。所以选择 Windows 任务计划程序（Task Scheduler）+ "以最高权限运行"，登录后静默以管理员身份启动，无 UAC 提示。
+
+Settings → "Start Clew at logon" 打开后：
+
+- 自动注册一个名为 `ClewAutoStart` 的登录任务（`schtasks /Create /SC ONLOGON /RL HIGHEST`）
+- 子选项 "Start minimized to tray"：勾选则任务命令行附加 `--minimized`，启动后只显示托盘图标，不弹主窗口
+- 关闭开关 = 删除任务（`schtasks /Delete /F`）；任务计划程序 GUI 里手动删除也会被 Settings 实时检测到
+
+注意：任务计划程序记录的是 `clew.exe` 的绝对路径。如果之后挪动了 `clew.exe`，请重新打开此开关让任务指向新路径。
+
 ## 技术选择
 
 ### 第三方库

@@ -71,7 +71,11 @@ void process_tree_manager::add_listener(tree_change_receiver* listener) {
 }
 
 void process_tree_manager::notify_tree_changed(std::string_view source, push_urgency urgency) {
-    (void)source;  // reserved for future diagnostic logging
+    // DEBUG-only: bumping a tree change is on the strand hot path. Default
+    // log_level=info → quill drops these at zero cost. e2e tests flip the
+    // level to debug to assert source-tagged invariants (e.g. T22:
+    // batch_hijack source appears exactly once per /api/hijack/batch call).
+    PC_LOG_DEBUG("[tree-change] source={}", source);
     for (auto* l : listeners_) l->on_tree_changed(urgency);
 }
 

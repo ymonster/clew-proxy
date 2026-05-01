@@ -9,6 +9,7 @@
 #include "common/api_exception.hpp"
 #include "config/config_change_tag.hpp"
 #include "config/types.hpp"
+#include "core/exe_paths.hpp"
 #include "core/log.hpp"
 
 namespace clew {
@@ -33,11 +34,14 @@ bool pump_pending_messages() {
 app::app(const cli_options& opts, HINSTANCE hinstance)
     : opts_(opts)
     , hinstance_(hinstance)
+    , config_(opts.config_path.empty()
+              ? exe_relative("clew.json")
+              : std::filesystem::path{opts.config_path})
     , strand_(asio::make_strand(ioc_))
     , cfg_store_(config_)
     , tree_mgr_(ioc_, strand_)
     , exec_(tree_mgr_, strand_)
-    , dns_mgr_(ioc_)
+    , dns_mgr_(ioc_, exe_relative("dns_state.json"))
     , acceptor_(ioc_, *port_tracker_, strand_, tcp_groups_)
     , socks5_udp_mgr_(ioc_, udp_groups_)
     , projection_(tree_mgr_, strand_)
@@ -196,6 +200,7 @@ std::unique_ptr<webview_app> app::create_gui() {
                            ui_cfg.window_width, ui_cfg.window_height);
     gui->set_close_to_tray(ui_cfg.close_to_tray);
     gui->set_devtools_enabled(opts_.devtools);
+    gui->set_start_minimized(opts_.start_minimized);
     gui->set_on_move_resize([this](int x, int y, int w, int h) {
         auto& ui      = config_.get_v2().ui;
         ui.window_x   = x;

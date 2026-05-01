@@ -53,6 +53,7 @@ private:
     bool initialized_ = false;
     bool close_to_tray_ = false;
     bool devtools_enabled_ = true;
+    bool start_minimized_ = false;  // launch directly into tray (autostart use case)
     NOTIFYICONDATAW nid_ = {};
     bool tray_created_ = false;
     bool currently_visible_ = true;
@@ -111,6 +112,15 @@ private:
                                     return result;
                                 }
                                 webview_controller_ = controller;
+
+                                // The controller is created with IsVisible=TRUE by default. If
+                                // we launched with --minimized the host window is already SW_HIDE
+                                // but the WebView2 instance would otherwise keep rendering.
+                                // Sync it down so process_projection's frontend_visible gate
+                                // matches the real WebView2 state from the start.
+                                if (!currently_visible_) {
+                                    webview_controller_->put_IsVisible(FALSE);
+                                }
 
                                 // Set dark background color to prevent white flash
                                 Microsoft::WRL::ComPtr<ICoreWebView2Controller2> controller2;
@@ -494,6 +504,10 @@ public:
     void set_initial_rect(int x, int y, int w, int h) { init_x_ = x; init_y_ = y; width_ = w; height_ = h; }
     void set_close_to_tray(bool v) { close_to_tray_ = v; }
     void set_devtools_enabled(bool v) { devtools_enabled_ = v; }
+    // Skip the initial SW_SHOW and start hidden (tray-only). Used by the
+    // "start minimized" autostart sub-toggle. Must be set before run() or
+    // the flag is read after window creation and has no effect.
+    void set_start_minimized(bool v) { start_minimized_ = v; }
     // Fires on the UI thread when the frontend posts {"type":"ready"} after
     // mount. The callback typically posts a strand task that calls
     // process_projection::replay_to_frontend to deliver the current snapshot.
@@ -508,16 +522,20 @@ public:
     // frontend_push_sink — callable from any thread. Marshals onto the UI
     // thread via PostMessageW, where on_push_to_frontend takes ownership
     // of the payload and forwards via PostWebMessageAsJson.
+    //
+    // Ownership transfer: PostMessageW only adopts the payload on success;
+    // on failure we leave it owned by the unique_ptr so its destructor
+    // cleans up. release() is therefore conditional on a successful post,
+    // not paired with a manual delete on the failure branch.
     void push(std::string_view event, std::string json_body) override {
         if (!hwnd_) return;
         auto p = std::make_unique<push_payload>();
         p->event.assign(event.data(), event.size());
         p->json_body = std::move(json_body);
 
-        LPARAM lp = reinterpret_cast<LPARAM>(p.release());
-        if (!::PostMessageW(hwnd_, WM_PUSH_TO_FRONTEND, 0, lp)) {
-            // HWND invalid (shutdown / not yet created): take ownership back.
-            delete reinterpret_cast<push_payload*>(lp);
+        if (::PostMessageW(hwnd_, WM_PUSH_TO_FRONTEND, 0,
+                           reinterpret_cast<LPARAM>(p.get()))) {
+            (void)p.release();
         }
     }
 
@@ -576,12 +594,21 @@ public:
         MARGINS margins = {1, 1, 1, 1};
         DwmExtendFrameIntoClientArea(hwnd_, &margins);
 
-        ShowWindow(hwnd_, SW_SHOW);
-        UpdateWindow(hwnd_);
+        if (start_minimized_) {
+            // Reuse the close-to-tray hidden path: SW_HIDE keeps it off the
+            // taskbar entirely (SW_MINIMIZE would briefly flash a button).
+            // Tray icon is created below, so the user can still bring it up.
+            ShowWindow(hwnd_, SW_HIDE);
+            currently_visible_ = false;
+        } else {
+            ShowWindow(hwnd_, SW_SHOW);
+            UpdateWindow(hwnd_);
+        }
         create_tray_icon();
         initialize_webview();
 
-        PC_LOG_INFO("WebView window created ({}x{}, frameless)", width_, height_);
+        PC_LOG_INFO("WebView window created ({}x{}, frameless, {})",
+                    width_, height_, start_minimized_ ? "tray-only" : "visible");
         return true;
     }
 

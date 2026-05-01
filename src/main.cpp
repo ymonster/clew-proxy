@@ -22,6 +22,7 @@
 #include "common/debug_console_session.hpp"
 #include "common/single_instance_guard.hpp"
 #include "common/winsock_session.hpp"
+#include "core/exe_paths.hpp"
 #include "core/log.hpp"
 #include "core/scoped_exit.hpp"
 #include "core/version.hpp"
@@ -43,10 +44,12 @@ static void print_usage() {
     std::cout << "Clew " CLEW_VERSION " - Process-level Traffic Hijacker\n\n";
     std::cout << "Usage: clew [options]\n\n";
     std::cout << "Options:\n";
-    std::cout << "  --gui           Launch with WebView2 GUI\n";
-    std::cout << "  --devtools      Enable WebView2 DevTools (F12)\n";
-    std::cout << "  --static-dir    Path to static files directory\n";
-    std::cout << "  --help, -h      Show this help message\n\n";
+    std::cout << "  --gui              Launch with WebView2 GUI\n";
+    std::cout << "  --devtools         Enable WebView2 DevTools (F12)\n";
+    std::cout << "  --static-dir DIR   Path to static files directory\n";
+    std::cout << "  --config PATH      Path to clew.json (default: <exe-dir>/clew.json)\n";
+    std::cout << "  --minimized        Start hidden in system tray (used by autostart)\n";
+    std::cout << "  --help, -h         Show this help message\n\n";
 }
 
 static clew::cli_options parse_args(int argc, char* argv[]) {
@@ -58,6 +61,8 @@ static clew::cli_options parse_args(int argc, char* argv[]) {
         if (arg == "--gui") opts.gui_mode = true;
         else if (arg == "--devtools") opts.devtools = true;
         else if (arg == "--static-dir" && it != args.end()) opts.static_dir = *it++;
+        else if (arg == "--config" && it != args.end()) opts.config_path = *it++;
+        else if (arg == "--minimized") opts.start_minimized = true;
         else if (arg == "--help" || arg == "-h") opts.help = true;
     }
     return opts;
@@ -66,8 +71,14 @@ static clew::cli_options parse_args(int argc, char* argv[]) {
 static void setup_logger() {
     quill::Backend::start();
 
+    // Always log next to clew.exe so the file is predictable regardless of
+    // launcher cwd (Task Scheduler, double-click, shell — all deposit cwd
+    // somewhere different). Quill takes a UTF-8 string so we go through
+    // .string(), which on Windows narrows from the wide path.
+    auto log_path = clew::exe_relative("clew.log").string();
+
     auto file_sink = quill::Frontend::create_or_get_sink<quill::RotatingFileSink>(
-        "clew.log",
+        log_path,
         []() {
             quill::RotatingFileSinkConfig cfg;
             cfg.set_open_mode('w');

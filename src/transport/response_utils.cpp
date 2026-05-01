@@ -10,10 +10,17 @@
 namespace clew {
 
 void write_json(httplib::Response& res, const nlohmann::json& body) {
+    // Set status explicitly so route_registry's [api] log line records the
+    // real value. cpp-httplib defaults res.status to -1 and only rewrites
+    // it to 200 right before flushing, after our INFO log has already
+    // captured -1. Functionally identical to the auto-200 path; just
+    // makes the audit log readable.
+    res.status = 200;
     res.set_content(body.dump(), "application/json");
 }
 
 void write_json_text(httplib::Response& res, std::string_view json_text) {
+    res.status = 200;
     res.set_content(std::string{json_text}, "application/json");
 }
 

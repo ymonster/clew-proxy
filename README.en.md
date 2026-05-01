@@ -102,6 +102,18 @@ Some apps (Spotify, certain geo-sensitive services) are picky about DNS resoluti
 - DNS queries go through SOCKS5 to the upstream resolver (default `8.8.8.8`).
 - On disable / exit the system DNS is auto-restored; if the process is force-killed, the next launch detects leftover state and restores it.
 
+### 5. Autostart at logon (disabled by default)
+
+Clew requires administrator privileges (kernel-level traffic interception). The naive registry approach (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`) would prompt UAC at every login — unacceptable. Instead, Clew registers a Windows Task Scheduler task with "Run with highest privileges", which launches silently as administrator at logon without any UAC dialog.
+
+Settings → "Start Clew at logon":
+
+- Creates a task named `ClewAutoStart` (`schtasks /Create /SC ONLOGON /RL HIGHEST`).
+- Sub-toggle "Start minimized to tray": appends `--minimized` to the task command, so Clew launches with only the tray icon visible — no main window.
+- Disabling the toggle deletes the task (`schtasks /Delete /F`). Manual removal via Task Scheduler GUI is also picked up live.
+
+Note: the task records the absolute `clew.exe` path. If you move the executable, re-toggle the setting so the task points to the new location.
+
 ## Technical choices
 
 ### Third-party libraries

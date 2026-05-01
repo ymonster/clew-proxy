@@ -56,10 +56,12 @@
 namespace clew {
 
 struct cli_options {
-    bool        gui_mode = false;
-    bool        help     = false;
-    bool        devtools = false;  // --devtools: enable WebView2 DevTools (F12)
+    bool        gui_mode        = false;
+    bool        help            = false;
+    bool        devtools        = false;  // --devtools: enable WebView2 DevTools (F12)
+    bool        start_minimized = false;  // --minimized: hide main window on launch (used by autostart)
     std::string static_dir;
+    std::string config_path;              // --config: explicit clew.json path; default = exe_directory()/clew.json
 };
 
 // Thrown by app's ctor / run() when a critical startup step fails

@@ -25,7 +25,7 @@ if (!globalScope.MonacoEnvironment) {
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Label } from '@/components/ui/label'
-import { getConfig, updateConfig } from '@/api/client'
+import { getConfig, updateConfig, getAutostart, setAutostart } from '@/api/client'
 import { Save } from 'lucide-vue-next'
 import { useTheme } from '@/composables/useTheme'
 import { CLEW_VERSION } from '@/version'
@@ -41,6 +41,11 @@ const saving = ref(false)
 const saveMessage = ref<{ type: 'success' | 'error'; text: string } | null>(null)
 const closeToTray = ref(false)
 const editorOpen = ref(false)
+
+// Autostart (Windows Task Scheduler entry; not persisted in clew.json)
+const autostartEnabled = ref(false)
+const autostartMinimized = ref(false)
+const autostartMessage = ref<string | null>(null)
 
 // DNS settings
 const dnsEnabled = ref(false)
@@ -130,6 +135,49 @@ async function saveConfig() {
   }
 }
 
+async function fetchAutostart() {
+  try {
+    const s = await getAutostart()
+    autostartEnabled.value = s.enabled
+    autostartMinimized.value = s.start_minimized
+  } catch {
+    // Backend not available; leave defaults (both false).
+  }
+}
+
+async function applyAutostart(next: { enabled: boolean; start_minimized: boolean }) {
+  autostartMessage.value = null
+  // Optimistic update so the toggle feels immediate; revert on failure.
+  const prev = { enabled: autostartEnabled.value, start_minimized: autostartMinimized.value }
+  autostartEnabled.value = next.enabled
+  autostartMinimized.value = next.start_minimized
+  try {
+    const result = await setAutostart(next)
+    autostartEnabled.value = result.enabled
+    autostartMinimized.value = result.start_minimized
+  } catch (err) {
+    autostartEnabled.value = prev.enabled
+    autostartMinimized.value = prev.start_minimized
+    autostartMessage.value = err instanceof Error ? err.message : 'Failed to update autostart'
+    setTimeout(() => { autostartMessage.value = null }, 4000)
+  }
+}
+
+async function toggleAutostart() {
+  await applyAutostart({
+    enabled: !autostartEnabled.value,
+    start_minimized: autostartMinimized.value,
+  })
+}
+
+async function toggleStartMinimized() {
+  if (!autostartEnabled.value) return
+  await applyAutostart({
+    enabled: true,
+    start_minimized: !autostartMinimized.value,
+  })
+}
+
 async function toggleCloseToTray() {
   try {
     const config = await getConfig() as Record<string, unknown>
@@ -192,8 +240,9 @@ function closeEditor() {
 }
 
 onMounted(() => {
-  // Only fetch close-to-tray state, don't init editor
+  // Only fetch close-to-tray + autostart state, don't init editor
   fetchConfig()
+  fetchAutostart()
 })
 
 watch(isDark, (dark) => {
@@ -235,6 +284,52 @@ onUnmounted(() => {
                 :class="closeToTray ? 'translate-x-[18px]' : 'translate-x-0.5'"
               />
             </button>
+          </div>
+
+          <!-- Autostart on Logon -->
+          <div class="px-4 py-3 bg-white dark:bg-[#18181b]">
+            <div class="flex items-center justify-between">
+              <div>
+                <p class="text-sm font-medium text-slate-700 dark:text-slate-200">Start Clew at logon</p>
+                <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                  Clew runs as administrator (UAC). Implemented via Windows Task Scheduler
+                  (`ClewAutoStart`) to skip the UAC prompt at every login. Re-toggle if you
+                  move the clew.exe path.
+                </p>
+              </div>
+              <button
+                class="relative shrink-0 ml-4 inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:focus:ring-offset-[#18181b]"
+                :class="autostartEnabled ? 'bg-blue-600' : 'bg-slate-300 dark:bg-slate-600'"
+                @click="toggleAutostart"
+              >
+                <span
+                  class="inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform"
+                  :class="autostartEnabled ? 'translate-x-[18px]' : 'translate-x-0.5'"
+                />
+              </button>
+            </div>
+
+            <div class="mt-3 pl-4 flex items-center justify-between"
+                 :class="autostartEnabled ? '' : 'opacity-50'">
+              <div>
+                <p class="text-xs font-medium text-slate-700 dark:text-slate-200">Start minimized to tray</p>
+                <p class="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                  Clew launches without a visible window — only the tray icon. Only effective when "Start at logon" is on.
+                </p>
+              </div>
+              <button
+                :disabled="!autostartEnabled"
+                class="relative shrink-0 ml-4 inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:focus:ring-offset-[#18181b] disabled:cursor-not-allowed"
+                :class="autostartMinimized ? 'bg-blue-600' : 'bg-slate-300 dark:bg-slate-600'"
+                @click="toggleStartMinimized"
+              >
+                <span
+                  class="inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform"
+                  :class="autostartMinimized ? 'translate-x-[18px]' : 'translate-x-0.5'"
+                />
+              </button>
+            </div>
+            <p v-if="autostartMessage" class="mt-2 text-xs text-red-500">{{ autostartMessage }}</p>
           </div>
 
           <!-- DNS Proxy -->

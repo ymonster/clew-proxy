@@ -214,3 +214,21 @@ export function browseExe(): Promise<{ cancelled?: boolean; path?: string; dir?:
     method: 'POST',
   })
 }
+
+// -- Autostart (Windows Task Scheduler ClewAutoStart) --
+
+export interface AutostartState {
+  enabled: boolean
+  start_minimized: boolean
+}
+
+export function getAutostart(): Promise<AutostartState> {
+  return request<AutostartState>('/autostart')
+}
+
+export function setAutostart(state: AutostartState): Promise<AutostartState> {
+  return request<AutostartState>('/autostart', {
+    method: 'PUT',
+    body: JSON.stringify(state),
+  })
+}

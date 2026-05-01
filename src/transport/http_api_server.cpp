@@ -18,6 +18,7 @@
 
 // Handler modules define register_* functions in the ::clew namespace.
 namespace clew {
+void register_autostart_handlers(route_registry&);
 void register_config_handlers(route_registry&);
 void register_connection_handlers(route_registry&);
 void register_group_handlers(route_registry&);
@@ -46,6 +47,7 @@ http_api_server::http_api_server(int port, api_context& ctx, std::string static_
     install_cache_headers(server_);
 
     clew::route_registry reg(server_, ctx_);
+    clew::register_autostart_handlers(reg);
     clew::register_config_handlers(reg);
     clew::register_connection_handlers(reg);
     clew::register_group_handlers(reg);
@@ -97,15 +99,18 @@ std::string http_api_server::get_executable_dir() {
 }
 
 void http_api_server::setup_static_files() {
+    // All candidates are anchored to either an explicit --static-dir or
+    // the exe directory. We deliberately do NOT include cwd-relative
+    // paths ("./frontend/dist" etc.) anymore — Task Scheduler launches
+    // clew.exe with cwd=system32 and Explorer double-click uses the
+    // desktop folder, neither of which is reachable from clew's resources.
+    // The two exe_dir candidates cover release zip layout
+    // (exe_dir/frontend/dist) and dev build layout
+    // (build/Release/clew.exe → exe_dir/../../frontend/dist).
     const std::vector<std::string> candidates = {
         static_dir_,
         get_executable_dir() + "/frontend/dist",
-        get_executable_dir() + "/../frontend/dist",
-        "./frontend/dist",
-        "../frontend/dist",
-        "../../frontend/dist",
-        get_executable_dir() + "/ui/dist",
-        "./ui/dist",
+        get_executable_dir() + "/../../frontend/dist",
     };
 
     for (const auto& path : candidates) {

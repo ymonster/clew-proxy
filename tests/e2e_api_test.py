@@ -8,7 +8,9 @@ Usage:
     python e2e_api_test.py
 """
 
+import pathlib
 import queue
+import re
 import requests
 import subprocess
 import sys
@@ -16,6 +18,7 @@ import threading
 import time
 import json
 from contextlib import contextmanager
+from datetime import datetime
 from typing import Iterator
 
 BASE = "http://127.0.0.1:18080/api"
@@ -23,6 +26,51 @@ PROXY_HOST = "127.0.0.1"
 PROXY_PORT = 7890
 TEST_TARGET = "http://httpbin.org/ip"  # Returns requester's IP
 CURL_EXE = "curl.exe"
+
+# clew.log lives next to clew.exe (since v0.9.0 chdir was reverted in favor
+# of explicit exe-dir resolution). Tests scan it for tagged events that
+# can't be observed at the HTTP level alone — see T22/T23 below.
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+LOG_PATH  = REPO_ROOT / "build" / "Release" / "clew.log"
+
+# Quill format: "%(time) [%(log_level_short_code)] %(message)"
+# Shortened: "2026-05-01 14:15:23.123456 [D] [tree-change] source=batch_hijack"
+_LOG_LINE_RE = re.compile(
+    r'^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{6})\s+'
+    r'\[(?P<lvl>[IDWE])\]\s+'
+    r'(?P<msg>.*)$'
+)
+
+
+def _parse_log_ts(s: str) -> float:
+    """Quill timestamps are local-time naive; matches time.time() domain."""
+    return datetime.strptime(s, "%Y-%m-%d %H:%M:%S.%f").timestamp()
+
+
+def collect_log_messages(pattern: re.Pattern,
+                         ts_start: float,
+                         ts_end: float) -> list[tuple[float, re.Match]]:
+    """Scan clew.log, return [(ts, match), ...] for lines whose timestamp
+    is in [ts_start, ts_end] AND whose message body matches `pattern`.
+
+    Real-time tailing on Windows + quill is unreliable (see stress_backend.py
+    rationale). We re-read the file at end of the measurement window — the
+    log is small enough that scanning the whole thing is fine."""
+    out: list[tuple[float, re.Match]] = []
+    if not LOG_PATH.exists():
+        return out
+    with open(LOG_PATH, "r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            m_outer = _LOG_LINE_RE.match(line.rstrip("\n"))
+            if not m_outer:
+                continue
+            ts = _parse_log_ts(m_outer.group("ts"))
+            if ts < ts_start or ts > ts_end:
+                continue
+            m_inner = pattern.search(m_outer.group("msg"))
+            if m_inner:
+                out.append((ts, m_inner))
+    return out
 
 passed = 0
 failed = 0
@@ -362,54 +410,151 @@ def _wait_pid_in_tree(pid, timeout=3.0):
     return False
 
 
-@test("Batch hijack emits exactly one SSE process_update (H5)")
+_TREE_CHANGE_RE = re.compile(r'\[tree-change\] source=(?P<source>\w+)')
+
+
+@test("Batch hijack fires notify_tree_changed exactly once (H5)")
 def test_batch_hijack_single_notify():
-    """DESIGN H5: manager.batch_hijack applies every add/remove then fires
-    notify_tree_changed exactly once. Two-pronged check:
-      - CORRECTNESS via /api/hijack state diff (insensitive to stray events)
-      - EFFICIENCY via process_update event count (catches per-pid fanout
-        regression — legacy emitted ~N events for N pids)."""
+    """DESIGN H5: process_tree_manager::batch_hijack applies every add/remove
+    on the strand and then fires notify_tree_changed("batch_hijack") exactly
+    once for the whole batch — never per-pid. We assert the C++ invariant
+    directly by counting `[tree-change] source=batch_hijack` lines in the
+    measurement window. Background ETW pushes (source=etw_start / etw_stop /
+    reconcile) and per-pid manual hijacks (source=manual_hijack) are
+    correctly NOT counted, which is why the previous SSE/Playwright variants
+    of this test were flaky on busy machines.
+
+    Requires log_level=debug (set by main()'s setup phase)."""
     # Pre-settle: prior tests spawn curl.exe processes whose ProcessStop
-    # ETW events can land in our collection window and look like strays.
-    time.sleep(1.0)
+    # events also generate tree-change lines, but those have a different
+    # source tag so they don't pollute our count.
+    time.sleep(0.5)
 
-    with _sse_subscription(f"{BASE}/events") as q:
-        _drain(q)
+    tree = requests.get(f"{BASE}/processes").json() if False else None  # GET removed
+    pids_resp = requests.get(f"{BASE}/processes").json() if False else None
+    # /api/processes was removed with the PostMessage transition. Walk a
+    # known-stable starting point: spawn cmd.exe children we own ourselves
+    # so we know the PIDs without going through the tree.
+    procs = []
+    for _ in range(5):
+        p = subprocess.Popen(
+            ["cmd.exe", "/c", "ping -n 30 127.0.0.1 >nul"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+        )
+        procs.append(p)
+    test_pids = [p.pid for p in procs]
+    try:
+        # Wait for ETW to register every spawned pid so the strand has them
+        # before we batch-hijack — and so the etw_start tree-change events
+        # finish landing before the measurement window opens.
+        for pid in test_pids:
+            assert _wait_pid_in_tree(pid, timeout=3.0), (
+                f"PID {pid} did not appear in tree (ETW backlog?)"
+            )
+        time.sleep(0.3)  # let etw_start tree-change lines flush
 
-        tree = requests.get(f"{BASE}/processes").json()
-        test_pids = [p for p in _iter_pids(tree) if p not in RESERVED_PIDS][:5]
-        assert len(test_pids) >= 3, f"Need >=3 pids to batch, got {len(test_pids)}"
+        ts_start = time.time()
 
         r = requests.post(f"{BASE}/hijack/batch", json={
             "pids": test_pids, "action": "hijack", "group_id": 0,
         })
         assert r.status_code == 200, f"batch hijack failed: {r.status_code} {r.text}"
 
-        time.sleep(0.4)
-        process_updates = _count(q, "process_update")
+        time.sleep(0.4)  # let quill flush + the listener fire
+        ts_end = time.time()
 
-        # Truth source: the /api/hijack state. After the batch all test_pids
-        # should be present, regardless of how many SSE frames arrived.
+        # Truth source: the /api/hijack state. All test pids must appear.
         hijacked_after = {p["pid"] for p in (requests.get(f"{BASE}/hijack").json() or [])}
+        expected = set(test_pids)
+        assert expected.issubset(hijacked_after), (
+            f"batch did not hijack all expected pids: "
+            f"missing {sorted(expected - hijacked_after)}"
+        )
 
-        # Cleanup inside the subscription so the reader stays alive.
+        events = collect_log_messages(_TREE_CHANGE_RE, ts_start, ts_end)
+        batch_count = sum(1 for _, m in events if m.group("source") == "batch_hijack")
+
+        # Exactly one batch_hijack tree-change in the window. ETW events
+        # (source=etw_start / etw_stop) are filtered by source tag so the
+        # test is robust to busy machines; the assertion targets only the
+        # H5 invariant. If clew.log is missing we have bigger problems —
+        # don't silently pass.
+        assert LOG_PATH.exists(), f"{LOG_PATH} missing — chdir or log routing broken"
+        assert batch_count == 1, (
+            f"expected exactly 1 [tree-change] source=batch_hijack in window, "
+            f"got {batch_count}. All sources seen: "
+            f"{[m.group('source') for _, m in events]}"
+        )
+
+        # Cleanup
         requests.post(f"{BASE}/hijack/batch", json={
             "pids": test_pids, "action": "unhijack", "group_id": 0,
         })
+        time.sleep(0.1)
+    finally:
+        for p in procs:
+            try: p.terminate()
+            except Exception: pass
+
+
+_API_DELETE_RE = re.compile(
+    r'\[api\] DELETE (?P<path>\S+) -> (?P<status>\d+) \((?P<us>\d+)us\)'
+)
+
+
+@test("DELETE /api/hijack roundtrip < 60ms (server-side, cpp-httplib regression net)")
+def test_delete_under_60ms_serverside():
+    """Pre-v0.8.8 cpp-httplib's MSG_PEEK + SO_RCVTIMEO bug made every DELETE
+    block for read_timeout (default 5s). The fix shipped a 'body: \"\"' on
+    the frontend; this is the regression net.
+
+    We check the SERVER-SIDE elapsed time recorded by route_registry::dispatch
+    (`[api] DELETE /api/hijack/N -> 200 (Xus)`), NOT the client-side wall
+    clock. Client wall-clock is muddied by Windows TCP loopback Nagle and
+    by Python's request stack overhead — the server-side number is what
+    actually matters for the bug. Requires log_level=debug (the [api]
+    line is INFO, but main()'s setup phase enables debug for T22 anyway)."""
+    # Spawn an owned process so we have a stable PID to hijack/unhijack.
+    p = subprocess.Popen(
+        ["cmd.exe", "/c", "ping -n 30 127.0.0.1 >nul"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+    )
+    try:
+        assert _wait_pid_in_tree(p.pid, timeout=3.0), (
+            f"PID {p.pid} did not appear in tree (ETW backlog?)"
+        )
+
+        r = requests.post(f"{BASE}/hijack/{p.pid}",
+                          json={"tree": False, "group_id": 0})
+        assert r.status_code == 200, f"hijack failed: {r.text}"
+
+        ts_start = time.time()
+        r = requests.delete(f"{BASE}/hijack/{p.pid}")
+        ts_end = time.time()
+        assert r.status_code == 200, f"delete failed: {r.status_code} {r.text}"
+
+        # Allow the log message to flush before we read.
         time.sleep(0.2)
 
-    expected = set(test_pids)
-    assert expected.issubset(hijacked_after), (
-        f"batch did not hijack all expected pids: "
-        f"missing {sorted(expected - hijacked_after)}"
-    )
+        events = collect_log_messages(_API_DELETE_RE, ts_start, ts_end + 0.5)
+        target = f"/api/hijack/{p.pid}"
+        match = next((m for _, m in events if m.group("path") == target), None)
+        assert match is not None, (
+            f"no [api] DELETE log line found for {target} in window. "
+            f"Events seen: {[(m.group('path'), m.group('us')) for _, m in events]}"
+        )
 
-    # ≤ 3 tolerates stray ProcessStop events on busy machines while still
-    # catching a regression to per-pid fanout (~5).
-    assert process_updates <= 3, (
-        f"expected <=3 process_update events after batch (ideal 1), "
-        f"got {process_updates} (legacy behavior emitted ~{len(test_pids)})"
-    )
+        elapsed_us = int(match.group("us"))
+        assert elapsed_us < 60_000, (
+            f"DELETE took {elapsed_us}us server-side (cap 60_000us = 60ms). "
+            f"Likely regression of cpp-httplib MSG_PEEK + SO_RCVTIMEO bug "
+            f"(was: every DELETE blocked for read_timeout = 5s)."
+        )
+    finally:
+        try: p.terminate()
+        except Exception: pass
 
 
 @test("PUT /api/config triggers auto rule reload (observer chain)")
@@ -754,6 +899,22 @@ if __name__ == "__main__":
 
     print(f"\nAPI: {BASE}")
     print(f"Proxy: socks5://{PROXY_HOST}:{PROXY_PORT}")
+    print(f"Log:   {LOG_PATH}")
+    print()
+
+    # Some tests assert source-tagged invariants (e.g. T22 batch_hijack
+    # single notify) by scanning clew.log. Those debug lines are dropped
+    # at quill's compile-cheap path under the default log_level=info, so
+    # we flip to debug for the duration of the run and restore on exit.
+    cfg = requests.get(f"{BASE}/config").json()
+    original_log_level = cfg.get("log_level", "info")
+    if original_log_level != "debug":
+        cfg["log_level"] = "debug"
+        requests.put(f"{BASE}/config", json=cfg)
+        time.sleep(0.2)
+        print(f"log_level: {original_log_level} -> debug (will restore on exit)")
+    else:
+        print("log_level: already debug")
     print()
 
     tests = [
@@ -763,17 +924,16 @@ if __name__ == "__main__":
         test_tcp_table,
         test_udp_table,
         test_icon_api,
-        # test_sse skipped: /api/events removed with the SSE->PostMessage
-        # transport switch. Equivalent push-channel coverage will return in
-        # Phase 3 (Playwright + CDP).
+        # test_sse retired: /api/events removed with the SSE->PostMessage
+        # transport switch. Push-channel coverage now lives in Playwright
+        # (test_no_event_source / test_push_after_hijack).
         test_create_rule,
         test_list_rules,
         test_curl_hijacked,
         test_proxy_routing,
         test_manual_hijack,
-        # test_batch_hijack_single_notify (H5) skipped for the same reason
-        # — it counted SSE process_update events. Phase 3 will reinstate
-        # via Playwright message capture or a dedicated backend counter.
+        test_batch_hijack_single_notify,         # T22 — log-scan rewrite
+        test_delete_under_60ms_serverside,       # T23 — log-scan rewrite
         test_config_put_reloads_rules,
         test_config_log_level_roundtrip,
         test_group_crud,
@@ -786,8 +946,20 @@ if __name__ == "__main__":
         test_dns_proxy_roundtrip,
     ]
 
-    for t in tests:
-        t()
+    try:
+        for t in tests:
+            t()
+    finally:
+        # Always restore log_level — verify.sh reuses the same clew.exe
+        # process across phases, and a leftover debug level would persist
+        # into clew.json on disk via config_store::mutate.
+        try:
+            cfg2 = requests.get(f"{BASE}/config").json()
+            if cfg2.get("log_level") != original_log_level:
+                cfg2["log_level"] = original_log_level
+                requests.put(f"{BASE}/config", json=cfg2)
+        except Exception as e:
+            print(f"WARN: failed to restore log_level: {e}", file=sys.stderr)
 
     print(f"\n{'=' * 60}")
     print(f"Results: {passed} passed, {failed} failed, {passed + failed} total")
