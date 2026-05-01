@@ -239,6 +239,15 @@ strand utilisation 48% visible → 0.0% hidden, hijack wait_us tail 940 ms →
 92 µs (any user CRUD waiting in the queue still completes; just nothing
 new piling up). See `memory/MEMORY.md` for the v0.8.9 release notes.
 
+### Autostart on logon (Task Scheduler, v0.9.0)
+
+Settings → "Start Clew at logon" registers a Windows Task Scheduler entry that launches clew.exe at user login with the user's elevated token. The naive registry approach (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`) would prompt UAC every login, since clew.exe needs admin for WinDivert and `SetInterfaceDnsSettings`. Task Scheduler with `/RL HIGHEST` skips the prompt.
+
+- **`src/services/autostart_service.{hpp,cpp}`** — stateless static API (`query()` / `set(enabled, start_minimized)`). Implementation shells out to `schtasks.exe` (system32 absolute path, not PATH-dependent), captures stdout + stderr via anonymous pipes drained by `std::jthread`s in parallel (a single sequential drain deadlocks if schtasks writes more to stderr than the buffer holds). Command-line construction goes through a `quote_win_arg` helper that follows the `CommandLineToArgvW` rules so paths with spaces or quotes survive. State lives in the OS, not in `clew.json` — `query()` shells out fresh on every call so manual edits via `taskschd.msc` are reflected immediately in the UI.
+- **`src/transport/handlers/autostart_handlers.cpp`** — `GET /api/autostart` returns `{enabled, start_minimized}`; `PUT /api/autostart` writes through to `autostart_service::set` and re-queries. No `api_context` dependency (mirrors `shell_service`).
+- **`webview_app::start_minimized_`** — when set (via `--minimized` CLI arg or `app::create_gui` from `cli_options`), the host window goes through `SW_HIDE` instead of `SW_SHOW` (cleaner than `SW_MINIMIZE` — no taskbar flash). Once the WebView2 controller is created (asynchronously, in a callback), `IsVisible` is set to `FALSE` so `process_projection`'s `frontend_visible` gate (Visibility gate above) matches reality from `t=0` and no work piles up.
+- **Task command line**: `"<exe-abs-path>" --config "<exe-dir>/clew.json"` plus `--minimized` if the sub-toggle is on. `--config` is pinned even though `exe_directory() / "clew.json"` is the default — explicit pinning self-documents the autostart contract in the task entry.
+
 ### Frontend HTTP CRUD: empty `body: ''` on DELETE
 
 This is independent of the push-transport switch above — they were two
@@ -296,9 +305,13 @@ diagnosis trail.
   - **Glob mode** (contains `*` or `?`): full wildcard match against the entire cmdline, order-sensitive. `*udp_client*8080*` matches; `*8080*udp_client*` does not.
 - **Lazy cmdline query**: `cmdline` is fetched via `NtQueryInformationProcess` only when a rule has `cmdline_pattern` set AND `process_name` already matched. Cached in `process_entry.cmdline_cache` (sentinel `\x01` = queried but failed/empty). Zero overhead when no rule uses cmdline.
 
-### Process tree logic for auto rules (hack_tree=true)
+### Process tree logic for auto rules (hack_tree pinned true since v0.9.0)
 
 Find matching process → traverse to tree root (parent not matching same name) → set flags on root and all LC-RS descendants (including dynamically created children via ETW ProcessStart).
+
+Since v0.9.0 the UI exposes only **Hack** and **Unhack** (no separate "Unhack Tree"); both operate in tree mode. The `AutoRule.hack_tree` field is preserved on disk for forward compatibility but `rule_engine_v3::set_auto_rules` pins it to `true` at load time, so a per-rule single-node mode does not exist at runtime. To spare a single descendant the user clicks Unhack on that specific node — clearing manual flags off a subtree leaves siblings unaffected.
+
+The HTTP handler `process_handlers.cpp::handle_hijack` / `handle_unhijack` no longer reads the `tree` body/query parameter; the `process_tree_service` signature still takes `tree_mode` so a future per-rule exclude can plug in.
 
 ### PID recycling handling
 
@@ -428,14 +441,36 @@ Push events (delivered via `WM_PUSH_TO_FRONTEND` → `PostWebMessageAsJson`,
   refresh-coalesce timer for `batched` urgency events (see "Coalescing" in
   Key Architectural Decisions).
 
+### Resource path resolution (v0.9.0)
+
+Earlier versions resolved `clew.log`, `clew.json`, `dns_state.json`, and `frontend/dist` against the launching shell's cwd, which silently broke when running under Task Scheduler (cwd = `system32`), via shortcut, or from a parent directory. v0.9.0 makes resolution explicit and cwd-independent:
+
+- **`src/core/exe_paths.hpp`** — small header exposing `exe_path()` / `exe_directory()` / `exe_relative(name)`. All four resources go through these.
+- **`clew.log`** — written to `exe_directory() / "clew.log"` (set in `main.cpp::setup_logger`).
+- **`clew.json`** — `--config <path>` if explicitly passed, otherwise `exe_directory() / "clew.json"`. Wired in `app::app(...)` ctor's initializer list.
+- **`dns_state.json`** — `dns_manager` constructor receives `exe_relative("dns_state.json")` from `app::app`.
+- **`frontend/dist`** — `http_api_server::setup_static_files` candidate list anchors to `get_executable_dir()` (release zip layout: `<exe>/frontend/dist`; dev build layout: `<exe>/../../frontend/dist`); cwd-relative candidates were removed.
+
+The autostart Task Scheduler entry pins `--config <abs path>` explicitly so a system32-cwd launch still finds the user's config. `--minimized` is also part of the registered command line when "Start minimized to tray" is on.
+
 ## Build notes
 
 - WinDivert + `SetInterfaceDnsSettings` both require administrator privileges. The UAC manifest is embedded via linker `/MANIFESTUAC:level='requireAdministrator'` (see `CMakeLists.txt`) — double-click triggers UAC prompt automatically.
 - ~30 translation units after the three-layer refactor (was a single TU in the legacy header-only layout). `CMakeLists.txt` enables `/MP` for parallel compilation; first clean build is noticeably longer than the legacy version, incremental builds are fine.
 - Frontend builds to static files served by cpp-httplib at runtime; dev mode uses Vite's proxy to port 18080.
-- **Launch with the right cwd**: clew's HTTP server uses relative path `./frontend/dist`. Launching the binary from outside the repo root (e.g. via Bash with `cwd=elsewhere`) silently serves whatever `./frontend/dist` resolves to in the launching shell's directory — easy way to get an empty / stale UI. Use `(cd <repo> && ./build/Release/clew.exe)` or `subprocess.Popen(..., cwd=<repo>)`.
 - Kill `clew.exe` before rebuilding (MSVC LNK1104 error otherwise).
 - `bash scripts/verify.sh` runs frontend build + cpp build + 7 layering grep guards + the HTTP e2e suite (`run_all.py`) + the Playwright + WebView2 e2e suite (`run_pw.py`) as a single command, each stage wrapped with a per-stage `timeout` so a single hung step aborts cleanly. Requires an administrator shell (clew.exe needs elevation), `npm` for the frontend build, and `uv` for the PEP 723 inline-deps Playwright runner.
+
+### E2E testing strategy: log-scan over Playwright timing
+
+The HTTP e2e suite runs 21 cases against a live clew.exe; the Playwright suite runs 3. The split is deliberate:
+
+- **HTTP / log-scan** (`tests/e2e_api_test.py`) — anything assertable from `clew.log` lives here. T22 (batch_hijack single notify, was T14) counts `[tree-change] source=batch_hijack` lines in a measurement window; T23 (DELETE 60ms regression net for the cpp-httplib bug) reads the server-side elapsed time from the `[api] DELETE … (Xus)` line. Both are independent of the frontend's own timing — V8 contention can't make these tests flaky. The suite flips `log_level=debug` at startup and restores on exit (`try/finally`), so DEBUG lines like `[tree-change]` are visible inside the run without polluting default behaviour.
+- **Playwright** (`tests/playwright_e2e/run_pw.py`) — only UI-side regressions that pure HTTP can't observe: no `/api/events` fetch ever made (no SSE leak), backend push reaches the Vue tree, no HTTP polling under ETW load. **Removed**: T14 batch single-push (replaced by T22 log-scan), DELETE 60ms (replaced by T23 log-scan), stress UI responsiveness (Playwright `page.evaluate` competes with V8 main-thread push processing, RTTs measured through CDP are several times higher than actual backend latency — wrong tool for that question).
+
+To enable the log-scan tests, the underlying instrumentation went in v0.9.0:
+- `notify_tree_changed` logs `[tree-change] source=…` at DEBUG (zero cost at default `info` level).
+- `route_registry::dispatch` was already logging `[api] METHOD path -> status (Xus)` at INFO; v0.9.0 added `write_json` setting `res.status=200` explicitly so the recorded status is the real value (was `-1`, cpp-httplib's pre-flush sentinel).
 
 ### Performance harness (no Playwright)
 
