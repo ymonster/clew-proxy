@@ -52,6 +52,8 @@ export function getProcessDetail(pid: number): Promise<ProcessInfo> {
 }
 
 // -- Hijack --
+// v0.9.0: backend ignores `tree` parameter (always tree-mode). The arg is kept
+// for signature stability and to keep the call sites self-documenting.
 
 export function hijackProcess(pid: number, tree = true, groupId = 0): Promise<void> {
   return requestVoid(`/hijack/${pid}`, {
@@ -60,7 +62,7 @@ export function hijackProcess(pid: number, tree = true, groupId = 0): Promise<vo
   })
 }
 
-export function unhijackProcess(pid: number, tree = false): Promise<void> {
+export function unhijackProcess(pid: number, tree = true): Promise<void> {
   const query = tree ? '?tree=true' : ''
   // body: '' makes the browser emit Content-Length: 0; cpp-httplib's
   // DELETE handling otherwise blocks for the full read_timeout (5 s).

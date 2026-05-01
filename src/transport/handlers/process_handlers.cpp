@@ -36,25 +36,26 @@ void handle_list_hijacked(const httplib::Request&, httplib::Response& res, const
     write_json(res, ctx.processes.list_hijacked());
 }
 
+// v0.9.0: hijack/unhijack always operate in tree mode. The `tree` body/query
+// parameter is no longer read; UI only exposes Hack / Unhack and per-rule
+// single-node mode is deferred. process_tree_service still takes `tree_mode`
+// internally so a future per-rule exclude / single-node mode can plug in.
 void handle_hijack(const httplib::Request& req, httplib::Response& res, const api_context& ctx) {
     auto pid = parse_match_u32(req, 1, "pid");
-    bool tree_mode = true;
     std::uint32_t gid = 0;
     if (!req.body.empty()) {
         auto body = nlohmann::json::parse(req.body, nullptr, /*allow_exceptions=*/false);
         if (!body.is_discarded()) {
-            tree_mode = body.value("tree", true);
-            gid       = body.value("group_id", 0u);
+            gid = body.value("group_id", 0u);
         }
     }
-    ctx.processes.hijack(pid, tree_mode, gid);
+    ctx.processes.hijack(pid, /*tree_mode=*/true, gid);
     write_json(res, nlohmann::json{{"success", true}});
 }
 
 void handle_unhijack(const httplib::Request& req, httplib::Response& res, const api_context& ctx) {
     auto pid = parse_match_u32(req, 1, "pid");
-    bool tree_mode = req.has_param("tree") && req.get_param_value("tree") == "true";
-    ctx.processes.unhijack(pid, tree_mode);
+    ctx.processes.unhijack(pid, /*tree_mode=*/true);
     write_json(res, nlohmann::json{{"success", true}});
 }
 

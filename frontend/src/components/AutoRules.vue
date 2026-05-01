@@ -326,7 +326,7 @@ defineExpose({ fetchRules })
               class="shrink-0 text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded"
               :class="rule.enabled ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : 'bg-slate-200 dark:bg-slate-800 text-slate-500'"
             >{{ rule.enabled ? 'Active' : 'Off' }}</span>
-            <Badge v-if="rule.hack_tree" variant="outline" class="h-4 px-1.5 py-0 text-[9px]">tree</Badge>
+            <Badge variant="outline" class="h-4 px-1.5 py-0 text-[9px]">tree</Badge>
             <Badge v-if="rule.protocol === 'udp'" variant="outline" class="h-4 px-1.5 py-0 text-[9px] text-emerald-600 border-emerald-300 dark:text-emerald-400 dark:border-emerald-700">udp</Badge>
             <Badge v-if="rule.protocol === 'both'" variant="outline" class="h-4 px-1.5 py-0 text-[9px] text-violet-600 border-violet-300 dark:text-violet-400 dark:border-violet-700">tcp+udp</Badge>
           </div>

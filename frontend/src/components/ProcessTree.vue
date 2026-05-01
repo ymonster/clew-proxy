@@ -85,16 +85,6 @@ onUnmounted(() => {
 
 // --- Tree helpers ---
 
-function hasHijackedDescendant(node: ProcessInfo): boolean {
-  if (node.hijacked) return true
-  if (node.children) {
-    for (const child of node.children) {
-      if (hasHijackedDescendant(child)) return true
-    }
-  }
-  return false
-}
-
 function countProcesses(nodes: ProcessInfo[]): number {
   let count = 0
   for (const node of nodes) {
@@ -179,20 +169,16 @@ function selectAllProcesses() {
 const isAllSelected = computed(() => selectedPid.value === null)
 
 // --- Context menu actions ---
-// Hack = tree mode by default (backend handles tree expansion).
-// No explicit re-fetch: backend's projection pushes a fresh snapshot
+// v0.9.0: Hack and Unhack are always tree-mode. To spare a single child,
+// click Unhack on that node. Backend projection pushes a fresh snapshot
 // after the strand applies the mutation; notify.ts swaps it into the
-// shared `tree` ref and Vue re-renders.
+// shared `tree` ref and Vue re-renders — no explicit re-fetch needed.
 async function hackProcess(pid: number) {
   try { await hijackProcess(pid) } catch {}
 }
 
 async function unhackProcess(pid: number) {
-  try { await unhijackProcess(pid) } catch {}
-}
-
-async function unhackTree(node: ProcessInfo) {
-  try { await unhijackProcess(node.pid, true) } catch {}
+  try { await unhijackProcess(pid, true) } catch {}
 }
 
 // --- Hijacked status helpers ---
@@ -265,13 +251,11 @@ function isAutoHijacked(node: ProcessInfo): boolean {
             :is-expanded="isExpanded"
             :is-manually-hijacked="isManuallyHijacked"
             :is-auto-hijacked="isAutoHijacked"
-            :has-hijacked-descendant="hasHijackedDescendant"
             :is-pid-active="isPidActive"
             @toggle-expand="toggleExpand"
             @select="selectProcess"
             @hack="hackProcess"
             @unhack="unhackProcess"
-            @unhack-tree="unhackTree"
           />
         </template>
         <div v-else class="px-3 py-4 text-xs text-slate-400 dark:text-slate-500 text-center">

@@ -67,7 +67,9 @@ const formProcessName = ref('')
 const formWorkDir = ref('')
 const formUseWorkDir = ref(false)
 const formCmdlinePattern = ref('')
-const formHackTree = ref(false)
+// v0.9.0: hack_tree is pinned true at runtime. The form ref stays for
+// schema/PUT compatibility but the user cannot toggle it.
+const formHackTree = ref(true)
 const formProtocol = ref<RuleProtocol>('tcp')
 const proxyGroups = ref<ProxyGroup[]>([])
 const formProxyGroupId = ref('0')
@@ -88,7 +90,7 @@ watch(() => props.open, async (open) => {
       formName.value = props.rule.name
       formProcessName.value = props.rule.process_name
       formCmdlinePattern.value = props.rule.cmdline_pattern
-      formHackTree.value = props.rule.hack_tree
+      formHackTree.value = true  // v0.9.0: always tree-mode
       formProtocol.value = props.rule.protocol || 'tcp'
       formProxyGroupId.value = String(props.rule.proxy_group_id ?? 0)
       isCustomProxy.value = false
@@ -148,10 +150,6 @@ function onExeSelected(event: Event) {
 function onCmdlineInput(event: Event) {
   const val = (event.target as HTMLInputElement).value
   if (val) formUseWorkDir.value = true
-}
-
-function toggleHackTree() {
-  formHackTree.value = !formHackTree.value
 }
 
 const selectedGroup = computed(() =>
@@ -307,22 +305,20 @@ function onClose(value: boolean) {
               </div>
             </div>
 
-            <!-- Capture Tree -->
+            <!-- Capture Tree — pinned ON in v0.9.0+. Display-only. -->
             <div
-              class="flex items-start gap-3 p-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-100/60 dark:bg-[#1c242c]/50 hover:bg-slate-200/50 dark:hover:bg-[#1c242c] transition-colors cursor-pointer group"
-              @click.stop="toggleHackTree"
+              class="flex items-start gap-3 p-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-100/60 dark:bg-[#1c242c]/50 cursor-not-allowed opacity-60"
             >
               <div class="relative flex items-center mt-0.5">
                 <div
-                  class="w-4 h-4 rounded border dark:border-slate-600 border-slate-300 flex items-center justify-center transition-colors"
-                  :class="formHackTree ? 'bg-blue-600 border-blue-600 dark:bg-blue-600' : 'bg-white dark:bg-[#101922]'"
+                  class="w-4 h-4 rounded border bg-blue-600 border-blue-600 dark:bg-blue-600 flex items-center justify-center"
                 >
-                  <Check v-if="formHackTree" class="w-3 h-3 text-white" stroke-width="3" />
+                  <Check class="w-3 h-3 text-white" stroke-width="3" />
                 </div>
               </div>
               <div class="flex flex-col select-none">
-                <span class="text-sm font-medium text-slate-700 dark:text-slate-200 group-hover:text-slate-900 dark:group-hover:text-white transition-colors">Capture Entire Process Tree</span>
-                <span class="text-xs text-slate-500 dark:text-slate-400">Automatically apply this rule to all child processes spawned by the target.</span>
+                <span class="text-sm font-medium text-slate-700 dark:text-slate-200">Capture Entire Process Tree</span>
+                <span class="text-xs text-slate-500 dark:text-slate-400">Always enabled in v0.9.0+. Per-rule single-process mode is not currently exposed.</span>
               </div>
             </div>
 

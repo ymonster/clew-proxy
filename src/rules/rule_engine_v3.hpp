@@ -122,9 +122,11 @@ public:
     // Load auto rules from config (called on strand)
     void set_auto_rules(const std::vector<AutoRule>& rules) {
         auto_rules_ = rules;
-        // Clear runtime state
         for (auto& r : auto_rules_) {
             r.matched_pids.clear();
+            // v0.9.0: hack_tree pinned true; field retained on disk for future
+            // per-rule single-node mode but never honored at runtime.
+            r.hack_tree = true;
         }
         refresh_cmdline_flag();
     }

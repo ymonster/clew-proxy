@@ -7,7 +7,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
-import { ChevronRight, ChevronDown, Monitor, Zap, ZapOff, Network } from 'lucide-vue-next'
+import { ChevronRight, ChevronDown, Monitor, Zap, ZapOff } from 'lucide-vue-next'
 import { computed, ref } from 'vue'
 
 const props = defineProps<{
@@ -17,7 +17,6 @@ const props = defineProps<{
   isExpanded: (pid: number) => boolean
   isManuallyHijacked: (node: ProcessInfo) => boolean
   isAutoHijacked: (node: ProcessInfo) => boolean
-  hasHijackedDescendant: (node: ProcessInfo) => boolean
   isPidActive: (pid: number) => boolean
 }>()
 
@@ -26,7 +25,6 @@ const emit = defineEmits<{
   select: [pid: number]
   hack: [pid: number]
   unhack: [pid: number]
-  'unhack-tree': [node: ProcessInfo]
 }>()
 
 const hasChildren = computed(() => !!props.node.children?.length)
@@ -37,14 +35,13 @@ const autoHijack = computed(() => props.isAutoHijacked(props.node))
 const isRoot = computed(() => props.depth === 0)
 const isActive = computed(() => props.isPidActive(props.node.pid))
 
-// Button state logic
+// Button state logic. v0.9.0: Hack and Unhack are always tree-mode; the
+// separate "Unhack Tree" button is gone. If user wants to spare a single
+// process, click Unhack on that specific node.
 const showHack = computed(() =>
   !props.node.hijacked && !autoHijack.value
 )
 const showUnhack = computed(() => manualHijack.value)
-const showUnhackTree = computed(() =>
-  manualHijack.value && hasChildren.value && props.hasHijackedDescendant(props.node)
-)
 
 // Match mockup: root=text-sm, child=text-[12px]
 const nameClass = computed(() => {
@@ -101,11 +98,6 @@ function onHack(e: Event) {
 function onUnhack(e: Event) {
   e.stopPropagation()
   emit('unhack', props.node.pid)
-}
-
-function onUnhackTree(e: Event) {
-  e.stopPropagation()
-  emit('unhack-tree', props.node)
 }
 </script>
 
@@ -168,7 +160,7 @@ function onUnhackTree(e: Event) {
                   </TooltipContent>
                 </Tooltip>
 
-                <!-- Unhack single (visible on any manually hijacked process) -->
+                <!-- Unhack single (visible on any manually hijacked process). Tree-mode is implicit. -->
                 <Tooltip v-if="showUnhack">
                   <TooltipTrigger as-child>
                     <button
@@ -180,21 +172,6 @@ function onUnhackTree(e: Event) {
                   </TooltipTrigger>
                   <TooltipContent side="top" :side-offset="4">
                     <p class="text-xs">Unhack</p>
-                  </TooltipContent>
-                </Tooltip>
-
-                <!-- Unhack tree (visible when has hijacked descendants) -->
-                <Tooltip v-if="showUnhackTree">
-                  <TooltipTrigger as-child>
-                    <button
-                      class="h-6 w-6 rounded flex items-center justify-center text-emerald-500 dark:text-emerald-400 hover:text-red-500 dark:hover:text-red-400 hover:bg-slate-200 dark:hover:bg-slate-700 transition-all"
-                      @click="onUnhackTree"
-                    >
-                      <Network class="w-3.5 h-3.5 rotate-180" />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="top" :side-offset="4">
-                    <p class="text-xs">Unhack Tree</p>
                   </TooltipContent>
                 </Tooltip>
               </TooltipProvider>
@@ -241,13 +218,11 @@ function onUnhackTree(e: Event) {
             :is-expanded="isExpanded"
             :is-manually-hijacked="isManuallyHijacked"
             :is-auto-hijacked="isAutoHijacked"
-            :has-hijacked-descendant="hasHijackedDescendant"
             :is-pid-active="isPidActive"
             @toggle-expand="(pid: number) => emit('toggle-expand', pid)"
             @select="(pid: number) => emit('select', pid)"
             @hack="(pid: number) => emit('hack', pid)"
             @unhack="(pid: number) => emit('unhack', pid)"
-            @unhack-tree="(n: ProcessInfo) => emit('unhack-tree', n)"
           />
         </div>
       </template>
