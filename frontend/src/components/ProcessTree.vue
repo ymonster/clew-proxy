@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { hijackProcess, unhijackProcess, getTcpConnections } from '@/api/client'
+import { hijackProcess, unhijackProcess, getTcpConnections, getUdpConnections } from '@/api/client'
 import { useNotifications } from '@/api/notify'
 import { useDocumentVisibility } from '@/composables/useDocumentVisibility'
 import type { ProcessInfo } from '@/api/types'
@@ -33,12 +33,17 @@ const lastActivityByPid = ref(new Map<number, number>())
 
 async function fetchActivity() {
   try {
-    const connections = await getTcpConnections()
+    // Pull TCP and UDP in parallel — UDP-only processes (Chrome QUIC,
+    // Discord voice, games, anything via the UDP path) wouldn't show as
+    // active otherwise.
+    const [tcp, udp] = await Promise.all([
+      getTcpConnections(),
+      getUdpConnections(),
+    ])
     const now = Date.now()
     const map = new Map<number, number>()
-    for (const conn of connections) {
-      map.set(conn.pid, now)
-    }
+    for (const conn of tcp) map.set(conn.pid, now)
+    for (const conn of udp) map.set(conn.pid, now)
     // Retain non-expired entries for PIDs with no current connections
     for (const [pid, ts] of lastActivityByPid.value) {
       if (!map.has(pid) && now - ts < ACTIVITY_TIMEOUT_MS) {
@@ -55,6 +60,27 @@ function isPidActive(pid: number): boolean {
   const lastSeen = lastActivityByPid.value.get(pid)
   if (lastSeen == null) return false
   return Date.now() - lastSeen < ACTIVITY_TIMEOUT_MS
+}
+
+// Subtree-active = self-active OR any descendant active. Used by
+// ProcessTreeNode to drive the chevron and connector dual-channel encoding
+// independent from the per-row text dimming (which still tracks self-only).
+const subtreeActivePids = computed(() => {
+  const set = new Set<number>()
+  function walk(node: ProcessInfo): boolean {
+    let any = isPidActive(node.pid)
+    for (const child of node.children ?? []) {
+      if (walk(child)) any = true
+    }
+    if (any) set.add(node.pid)
+    return any
+  }
+  for (const root of processes.value) walk(root)
+  return set
+})
+
+function isSubtreeActive(node: ProcessInfo): boolean {
+  return subtreeActivePids.value.has(node.pid)
 }
 
 function startActivityPolling() {
@@ -252,6 +278,7 @@ function isAutoHijacked(node: ProcessInfo): boolean {
             :is-manually-hijacked="isManuallyHijacked"
             :is-auto-hijacked="isAutoHijacked"
             :is-pid-active="isPidActive"
+            :is-subtree-active="isSubtreeActive"
             @toggle-expand="toggleExpand"
             @select="selectProcess"
             @hack="hackProcess"

@@ -18,6 +18,7 @@ const props = defineProps<{
   isManuallyHijacked: (node: ProcessInfo) => boolean
   isAutoHijacked: (node: ProcessInfo) => boolean
   isPidActive: (pid: number) => boolean
+  isSubtreeActive: (node: ProcessInfo) => boolean
 }>()
 
 const emit = defineEmits<{
@@ -28,6 +29,7 @@ const emit = defineEmits<{
 }>()
 
 const hasChildren = computed(() => !!props.node.children?.length)
+const children = computed(() => props.node.children ?? [])
 const expanded = computed(() => props.isExpanded(props.node.pid))
 const isSelected = computed(() => props.selectedPid === props.node.pid)
 const manualHijack = computed(() => props.isManuallyHijacked(props.node))
@@ -74,9 +76,20 @@ const rowClass = computed(() => {
   return 'border-transparent hover:bg-slate-100 dark:hover:bg-slate-800/50'
 })
 
-const rowOpacity = computed(() => {
-  if (isSelected.value) return undefined
-  return isActive.value ? undefined : '0.5'
+// Self-idle dimming for text (name + PID): driven by self-active only.
+// Selection takes precedence.
+const textDim = computed(() => {
+  if (isSelected.value) return ''
+  return isActive.value ? '' : 'opacity-50'
+})
+
+// Icon dimming: driven by subtree-active (self OR descendants). A self-idle
+// process whose subtree is alive (e.g., explorer.exe with active children)
+// keeps a full-color icon as a "this branch matters" hint. Only fully-dead
+// subtrees get a dim icon.
+const iconDim = computed(() => {
+  if (isSelected.value) return ''
+  return props.isSubtreeActive(props.node) ? '' : 'opacity-50'
 })
 
 function onRowClick() {
@@ -107,13 +120,18 @@ function onUnhack(e: Event) {
     <div
       class="group flex py-1.5 pr-2 rounded cursor-pointer transition-colors border-l-2"
       :class="rowClass"
-      :style="rowOpacity ? { opacity: rowOpacity } : undefined"
       @click="onRowClick"
       :title="node.cmdline || node.name"
     >
       <!-- Expand arrow -->
       <div class="w-5 flex items-center justify-center shrink-0" @click="onArrowClick">
-        <div v-if="hasChildren" class="p-0.5 rounded text-slate-400 dark:text-slate-500 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors">
+        <div
+          v-if="hasChildren"
+          class="p-0.5 rounded transition-colors hover:bg-slate-200 dark:hover:bg-slate-700"
+          :class="isSubtreeActive(node)
+            ? 'text-slate-700 dark:text-slate-300'
+            : 'text-slate-400 dark:text-slate-500'"
+        >
           <ChevronDown v-if="expanded" class="w-3 h-3" />
           <ChevronRight v-else class="w-3 h-3" />
         </div>
@@ -125,11 +143,12 @@ function onUnhack(e: Event) {
           v-if="!iconFailed"
           :src="iconUrl"
           :alt="`${node.name} icon`"
-          class="w-4 h-4 mt-[1px] shrink-0"
+          class="w-4 h-4 mt-[1px] shrink-0 transition-opacity"
+          :class="iconDim"
           loading="lazy"
           @error="iconFailed = true"
         />
-        <Monitor v-else class="w-4 h-4 mt-[1px] shrink-0" :class="iconClass" />
+        <Monitor v-else class="w-4 h-4 mt-[1px] shrink-0 transition-opacity" :class="[iconClass, iconDim]" />
         <!-- Hijack indicator dot — left of name, always visible -->
         <span
           v-if="node.hijacked"
@@ -139,7 +158,7 @@ function onUnhack(e: Event) {
         <div class="flex-1 min-w-0 flex flex-col">
           <!-- Row 1: Name + PID + action buttons -->
           <div class="flex justify-between items-center leading-tight">
-            <span class="truncate font-mono tracking-tight" :class="nameClass">
+            <span class="truncate font-mono tracking-tight transition-opacity" :class="[nameClass, textDim]">
               {{ node.name }}
             </span>
             <div class="flex items-center gap-1 shrink-0 ml-2">
@@ -177,7 +196,7 @@ function onUnhack(e: Event) {
               </TooltipProvider>
 
               <!-- PID -->
-              <span class="font-mono" :class="pidClass">{{ node.pid }}</span>
+              <span class="font-mono transition-opacity" :class="[pidClass, textDim]">{{ node.pid }}</span>
             </div>
           </div>
           <!-- Row 2: MANUAL or AUTO badge (below name) -->
@@ -201,15 +220,43 @@ function onUnhack(e: Event) {
       </div>
     </div>
 
-    <!-- Recursive children with tree guide lines -->
+    <!-- Recursive children with per-segment guide lines.
+         Each child wrapper draws its own pre-connector and post-connector
+         segments so colors can vary per sibling (dual-channel encoding) and
+         the last child cleanly stops at its corner (no dangling vertical). -->
     <div
       v-if="hasChildren && expanded"
-      class="ml-[18px] pl-3 border-l border-slate-200 dark:border-slate-700/80"
+      class="ml-[18px] pl-3"
     >
-      <template v-for="child in node.children" :key="child.pid">
+      <template v-for="(child, idx) in children" :key="child.pid">
         <div class="relative mt-0.5">
-          <!-- Horizontal branch line -->
-          <div class="absolute left-0 top-[14px] w-3 h-px bg-slate-200 dark:bg-slate-700/80 -translate-x-full" />
+          <!-- Pre-connector vertical: covers gap above (mt-0.5 = 2px) +
+               row top to connector point (14px). Color = is THIS child's
+               subtree active. -->
+          <div
+            class="absolute left-0 w-px -translate-x-3 top-[-2px] h-[16px] transition-colors"
+            :class="isSubtreeActive(child)
+              ? 'bg-slate-400 dark:bg-slate-500'
+              : 'bg-slate-200 dark:bg-slate-700/80'"
+          />
+          <!-- Horizontal branch line. Color follows pre-connector. -->
+          <div
+            class="absolute left-0 top-[14px] w-3 h-px -translate-x-full transition-colors"
+            :class="isSubtreeActive(child)
+              ? 'bg-slate-400 dark:bg-slate-500'
+              : 'bg-slate-200 dark:bg-slate-700/80'"
+          />
+          <!-- Post-connector vertical: only when not last sibling. Spans
+               through this child's expanded subtree because the wrapper
+               height includes the recursive ProcessTreeNode subtree.
+               Color = is the NEXT sibling's subtree active. -->
+          <div
+            v-if="idx < children.length - 1"
+            class="absolute left-0 w-px -translate-x-3 top-[14px] bottom-[-2px] transition-colors"
+            :class="isSubtreeActive(children[idx + 1]!)
+              ? 'bg-slate-400 dark:bg-slate-500'
+              : 'bg-slate-200 dark:bg-slate-700/80'"
+          />
 
           <ProcessTreeNode
             :node="child"
@@ -219,6 +266,7 @@ function onUnhack(e: Event) {
             :is-manually-hijacked="isManuallyHijacked"
             :is-auto-hijacked="isAutoHijacked"
             :is-pid-active="isPidActive"
+            :is-subtree-active="isSubtreeActive"
             @toggle-expand="(pid: number) => emit('toggle-expand', pid)"
             @select="(pid: number) => emit('select', pid)"
             @hack="(pid: number) => emit('hack', pid)"
