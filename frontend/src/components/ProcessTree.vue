@@ -4,7 +4,7 @@ import { hijackProcess, unhijackProcess, getTcpConnections, getUdpConnections } 
 import { useNotifications } from '@/api/notify'
 import { useDocumentVisibility } from '@/composables/useDocumentVisibility'
 import type { ProcessInfo } from '@/api/types'
-import { Search, Monitor } from 'lucide-vue-next'
+import { Search, Monitor, X } from 'lucide-vue-next'
 import ProcessTreeNode from './ProcessTreeNode.vue'
 
 const notify = useNotifications()
@@ -24,7 +24,10 @@ const emit = defineEmits<{
 // --- State ---
 const searchQuery = ref('')
 const filterTab = ref<'all' | 'proxied' | 'direct'>('all')
-const expandedPids = ref<Set<number>>(new Set())
+// User's explicit expand/collapse preference per pid. `undefined` (absent
+// from the map) means "use the default": expanded during search, collapsed
+// otherwise. A click always writes here, so collapse works during search.
+const expandedPids = ref<Map<number, boolean>>(new Map())
 const selectedPid = ref<number | null>(null)
 let activityTimer: ReturnType<typeof setInterval> | null = null
 
@@ -147,18 +150,48 @@ function filterTree(nodes: ProcessInfo[]): ProcessInfo[] {
 
   const result: ProcessInfo[] = []
   for (const node of nodes) {
-    const filteredChildren = node.children ? filterTree(node.children) : []
     const selfMatches =
       (!query || matchesSearch(node, query)) && matchesFilter(node)
 
-    if (selfMatches || filteredChildren.length > 0) {
-      result.push({
-        ...node,
-        children: filteredChildren,
-      })
+    if (selfMatches) {
+      // Match: keep entire subtree as-is so the user sees the full
+      // descendant context (e.g., search "antigravity" → see its child
+      // chrome.exe / cmd.exe even though those names don't contain
+      // "antigravity").
+      result.push(node)
+    } else {
+      // Non-match: keep only if some descendant matches, preserving the
+      // ancestor chain to that match.
+      const filteredChildren = node.children ? filterTree(node.children) : []
+      if (filteredChildren.length > 0) {
+        result.push({
+          ...node,
+          children: filteredChildren,
+        })
+      }
     }
   }
   return result
+}
+
+// PIDs whose own data (name / pid / cmdline) matches the current query.
+// Distinct from the rendered tree, which also keeps ancestors and
+// descendants of matches as context. Used to amber-highlight the actual
+// hits like Ctrl+F. Empty when no query.
+const matchedPids = computed(() => {
+  const set = new Set<number>()
+  const q = searchQuery.value.trim()
+  if (!q) return set
+  function walk(node: ProcessInfo) {
+    if (matchesSearch(node, q) && matchesFilter(node)) set.add(node.pid)
+    node.children?.forEach(walk)
+  }
+  processes.value.forEach(walk)
+  return set
+})
+
+function isMatched(pid: number): boolean {
+  return matchedPids.value.has(pid)
 }
 
 const filteredProcesses = computed(() => filterTree(processes.value))
@@ -166,19 +199,18 @@ const filteredProcesses = computed(() => filterTree(processes.value))
 const isFiltering = computed(() => searchQuery.value.trim() !== '')
 
 // --- Expand / Collapse ---
-function toggleExpand(pid: number) {
-  const newSet = new Set(expandedPids.value)
-  if (newSet.has(pid)) {
-    newSet.delete(pid)
-  } else {
-    newSet.add(pid)
-  }
-  expandedPids.value = newSet
+function isExpanded(pid: number): boolean {
+  const userPref = expandedPids.value.get(pid)
+  if (userPref !== undefined) return userPref
+  // Default: expanded during search (so matched subtrees are visible),
+  // collapsed otherwise.
+  return isFiltering.value
 }
 
-function isExpanded(pid: number): boolean {
-  if (isFiltering.value) return true
-  return expandedPids.value.has(pid)
+function toggleExpand(pid: number) {
+  const newMap = new Map(expandedPids.value)
+  newMap.set(pid, !isExpanded(pid))
+  expandedPids.value = newMap
 }
 
 // --- Selection ---
@@ -227,8 +259,17 @@ function isAutoHijacked(node: ProcessInfo): boolean {
           v-model="searchQuery"
           type="text"
           placeholder="Search PID or name..."
-          class="w-full pl-9 pr-3 py-1.5 text-sm bg-white dark:bg-[#09090b] border border-slate-200 dark:border-slate-700 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 transition-all placeholder:text-slate-400 dark:placeholder:text-slate-600 text-slate-800 dark:text-slate-200"
+          class="w-full pl-9 pr-9 py-1.5 text-sm bg-white dark:bg-[#09090b] border border-slate-200 dark:border-slate-700 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 transition-all placeholder:text-slate-400 dark:placeholder:text-slate-600 text-slate-800 dark:text-slate-200"
         />
+        <button
+          v-if="searchQuery"
+          type="button"
+          aria-label="Clear search"
+          class="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded text-slate-400 dark:text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+          @click="searchQuery = ''"
+        >
+          <X class="w-3.5 h-3.5" />
+        </button>
       </div>
     </div>
 
@@ -279,6 +320,7 @@ function isAutoHijacked(node: ProcessInfo): boolean {
             :is-auto-hijacked="isAutoHijacked"
             :is-pid-active="isPidActive"
             :is-subtree-active="isSubtreeActive"
+            :is-matched="isMatched"
             @toggle-expand="toggleExpand"
             @select="selectProcess"
             @hack="hackProcess"

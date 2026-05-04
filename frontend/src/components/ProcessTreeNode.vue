@@ -19,6 +19,7 @@ const props = defineProps<{
   isAutoHijacked: (node: ProcessInfo) => boolean
   isPidActive: (pid: number) => boolean
   isSubtreeActive: (node: ProcessInfo) => boolean
+  isMatched: (pid: number) => boolean
 }>()
 
 const emit = defineEmits<{
@@ -92,6 +93,15 @@ const iconDim = computed(() => {
   return props.isSubtreeActive(props.node) ? '' : 'opacity-50'
 })
 
+// Search-match highlight (Ctrl+F style): only direct hits get the amber
+// tint, ancestors and descendants kept as context don't. Selection bg
+// wins over match bg, so we yield when selected.
+const matchClass = computed(() => {
+  if (!props.isMatched(props.node.pid)) return ''
+  if (isSelected.value) return ''
+  return 'bg-amber-300/40 dark:bg-amber-400/15'
+})
+
 function onRowClick() {
   emit('select', props.node.pid)
 }
@@ -119,7 +129,7 @@ function onUnhack(e: Event) {
     <!-- Row with action buttons -->
     <div
       class="group flex py-1.5 pr-2 rounded cursor-pointer transition-colors border-l-2"
-      :class="rowClass"
+      :class="[rowClass, matchClass]"
       @click="onRowClick"
       :title="node.cmdline || node.name"
     >
@@ -267,6 +277,7 @@ function onUnhack(e: Event) {
             :is-auto-hijacked="isAutoHijacked"
             :is-pid-active="isPidActive"
             :is-subtree-active="isSubtreeActive"
+            :is-matched="isMatched"
             @toggle-expand="(pid: number) => emit('toggle-expand', pid)"
             @select="(pid: number) => emit('select', pid)"
             @hack="(pid: number) => emit('hack', pid)"
