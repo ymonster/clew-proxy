@@ -21,6 +21,8 @@
 
 - **进程树代理**：一条规则命中后，它的所有子进程（包括启动后才动态派生的）会自动跟着走代理。Chromium / Electron 类应用会派生很多子进程，只代理主进程通常不够，或者你需要做足够的研究才能知道究竟需要代理哪个进程。那么现在你可以在 `Rules` 页面去增加规则，选择特定 image path 的 exe 文件，也可以只输入一个名字（比如 Antigravity.exe），都可以完成任务。
 - **命令行级别匹配**：比如同一个 `python.exe` 跑不同脚本时， `Rules` 页面配置你的规则时，可以用命令行关键词进行匹配（比如只代理跑 `crawler.py` 的那个进程，不影响其它 python 进程）。
+  - 比如 [ccusage](https://github.com/ryoppippi/ccusage)，跑的时候会报 `Failed to fetch model pricing from LiteLLM`。Node 24 以上可以用 `NODE_USE_ENV_PROXY=1` 让 HTTP 代理环境变量生效；也可以用 Clew 在 Rules 页面新增规则，Name 填 `ccusage`，Process name 填 `node.exe`，**Cmdline pattern 填 `ccusage`**，问题就解决了。
+
 - **多 SOCKS5 后端**：支持多组代理，不同规则路由到不同组。因为我用到的大多数代理服务工具都支持 socks5，而 http 代理这些工具自身就支持，不需要我来做。
 - **UDP 支持**：per-app-port SOCKS5 UDP ASSOCIATE，基于 RFC 1928。
 - **内置 DNS forwarder**：启用后把系统 DNS 自动指向 Clew 的内置 forwarder，DNS 查询走 SOCKS5 到上游；关闭或退出会还原系统 DNS，异常被强杀，下次启动也会检测残留并恢复。
