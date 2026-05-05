@@ -153,7 +153,7 @@ void process_tree_manager::on_etw_process_start(const etw_process_event& evt) {
         if (etw_buffer_.size() < kEtwBufferLimit) etw_buffer_.push_back(evt);
         return;
     }
-    apply_etw_event_locked(evt);
+    apply_etw_event_on_strand(evt);
     notify_tree_changed("etw_start", push_urgency::batched);
 }
 
@@ -162,13 +162,13 @@ void process_tree_manager::on_etw_process_stop(const etw_process_event& evt) {
         if (etw_buffer_.size() < kEtwBufferLimit) etw_buffer_.push_back(evt);
         return;
     }
-    apply_etw_event_locked(evt);
+    apply_etw_event_on_strand(evt);
     notify_tree_changed("etw_stop", push_urgency::batched);
 }
 
 // --- Internal event handling ---
 
-void process_tree_manager::apply_etw_event_locked(const etw_process_event& evt) {
+void process_tree_manager::apply_etw_event_on_strand(const etw_process_event& evt) {
     if (evt.type == etw_process_event::START) {
         uint32_t idx = tree_.add_entry(evt.pid, evt.parent_pid, evt.create_time, evt.image_name);
         auto matched = rules_.on_process_start(tree_, idx);
@@ -194,7 +194,7 @@ void process_tree_manager::build_initial_tree(const std::vector<raw_process_reco
 
     std::size_t replayed = 0;
     for (const auto& evt : etw_buffer_) {
-        apply_etw_event_locked(evt);
+        apply_etw_event_on_strand(evt);
         ++replayed;
     }
     if (replayed > 0) {

@@ -109,7 +109,7 @@ private:
     // future call sites must make a deliberate choice.
     void notify_tree_changed(std::string_view source, push_urgency urgency);
 
-    void apply_etw_event_locked(const etw_process_event& evt);
+    void apply_etw_event_on_strand(const etw_process_event& evt);
     void build_initial_tree(const std::vector<raw_process_record>& snapshot);
     void schedule_reconcile();
     void reconcile_with_snapshot(const std::vector<raw_process_record>& snapshot);
