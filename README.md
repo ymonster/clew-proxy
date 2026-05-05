@@ -190,6 +190,20 @@ cd ..
 ./build/Release/clew.exe
 ```
 
+### clangd / LSP 配置（可选）
+
+仓库里有 `.clangd` 文件和 `windows-vcpkg-clangd` preset，**只编译跑 release 用不到**，可以无视。
+
+只有编辑器用 clangd 做跳转 / 补全（VS Code clangd 插件、Visual Studio clangd 插件、vim/neovim/helix、Claude Code 自带 LSP 等）的人才用得上。原因：CMake 的 Visual Studio 生成器不输出 `compile_commands.json`，clangd 拿不到 vcpkg / WebView2 / asio 这些头文件的 include 路径，会一片红。`.clangd` 配合一个独立的 Ninja preset 喂给 clangd 完整的 include。
+
+启用步骤（需要本机有 Ninja）：
+
+```bash
+cmake --preset windows-vcpkg-clangd
+```
+
+会在 `build-clangd/` 下生成 `compile_commands.json`（已 gitignore），clangd 自动读取。改了 `vcpkg.json` / 加了源文件 / 加了 include 目录后重跑一次。
+
 ## 贡献
 
 欢迎 Issue / PR。项目结构、架构说明、API schema 见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。

@@ -190,6 +190,20 @@ cd ..
 ./build/Release/clew.exe
 ```
 
+### clangd / LSP setup (optional)
+
+The repo ships a `.clangd` file and a `windows-vcpkg-clangd` preset. **Not needed if you only build and run release** — feel free to ignore both.
+
+They're only relevant if your editor uses clangd for jump-to-definition / completion (VS Code clangd plugin, Visual Studio clangd plugin, vim / neovim / helix, Claude Code's built-in LSP, etc.). Reason: CMake's Visual Studio generator does not emit `compile_commands.json`, so clangd has no way to find the vcpkg / WebView2 / asio headers and reports every include as missing. `.clangd` plus a dedicated Ninja preset feed clangd a complete include set.
+
+To enable (requires Ninja on PATH):
+
+```bash
+cmake --preset windows-vcpkg-clangd
+```
+
+This writes `compile_commands.json` into `build-clangd/` (gitignored); clangd picks it up automatically. Re-run after changes to `vcpkg.json`, new source files, or new include directories.
+
 ## Contributing
 
 Issues / PRs welcome. Project structure, architecture, and API schema are documented in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
