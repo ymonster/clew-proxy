@@ -8,9 +8,22 @@
       "architecture": "x64",
       "binaryDir": "${sourceDir}/build",
       "cacheVariables": {
-        "CMAKE_TOOLCHAIN_FILE": "D:/public_library/raw_libs/vcpkg/scripts/buildsystems/vcpkg.cmake",
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
         "VCPKG_TARGET_TRIPLET": "x64-windows",
         "CLEW_ENABLE_WEBVIEW2": "ON"
+      }
+    },
+    {
+      "name": "windows-vcpkg-clangd",
+      "displayName": "Clangd compile_commands.json (Ninja, configure-only)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-clangd",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET": "x64-windows",
+        "CLEW_ENABLE_WEBVIEW2": "ON",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_BUILD_TYPE": "Debug"
       }
     }
   ]

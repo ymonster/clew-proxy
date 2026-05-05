@@ -1,0 +1,20 @@
+# clangd configuration. Shared by all clangd consumers in this repo:
+# Claude Code's clangd plugin, VS2022's clangd, vim/nvim, etc. — all read
+# the same compile_commands.json so vcpkg / WebView2 / asio / quill / cpp-httplib
+# include paths resolve identically everywhere.
+#
+# Generate / refresh with:
+#   cmake --preset windows-vcpkg-clangd
+# (configure-only — no build needed; compile_commands.json lands in build-clangd/)
+#
+# Re-run after vcpkg.json changes, new source files, or new include dirs.
+# Requires VCPKG_ROOT env var pointing at your vcpkg checkout.
+
+CompileFlags:
+  CompilationDatabase: build-clangd
+
+Diagnostics:
+  # Header-only template libs (asio standalone, quill, cpp-httplib, fmt) trigger
+  # constant include-what-you-use noise; clangd's IWYU heuristic doesn't
+  # understand transitive header design.
+  UnusedIncludes: None

@@ -10,6 +10,7 @@ ipch/
 
 # Build outputs
 build/
+build-clangd/
 x64/
 x86/
 Debug/
