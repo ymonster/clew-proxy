@@ -56,6 +56,14 @@ private:
     bool start_minimized_ = false;  // launch directly into tray (autostart use case)
     NOTIFYICONDATAW nid_ = {};
     bool tray_created_ = false;
+    // Autostart-timing resilience for the tray icon: at very early logon the
+    // shell may silently reject NIM_ADD. We retry up to N times via a 500ms
+    // WM_TIMER and also subscribe to the "TaskbarCreated" broadcast (sent
+    // when the shell becomes ready and on Explorer crash recovery).
+    UINT taskbar_created_msg_ = 0;
+    int  tray_retry_count_    = 0;
+    static constexpr UINT_PTR TRAY_RETRY_TIMER_ID = 1;
+    static constexpr int      TRAY_MAX_RETRIES    = 10;
     bool currently_visible_ = true;
     std::function<void()> on_ready_;
     // Fired whenever the host transitions WebView2 IsVisible. Wired in
@@ -250,8 +258,41 @@ private:
         HICON app_icon = LoadIconW(hinst, MAKEINTRESOURCEW(1));
         nid_.hIcon = app_icon ? app_icon : LoadIcon(nullptr, IDI_APPLICATION);
         wcscpy_s(nid_.szTip, L"Clew");
-        Shell_NotifyIconW(NIM_ADD, &nid_);
-        tray_created_ = true;
+
+        // NIM_ADD is the normal path. NIM_MODIFY catches the Win10 1903 case
+        // where TaskbarCreated fires after a DPI change without the previous
+        // registration being cleared (see wxWidgets#18588).
+        BOOL ok = Shell_NotifyIconW(NIM_ADD, &nid_);
+        if (!ok) ok = Shell_NotifyIconW(NIM_MODIFY, &nid_);
+
+        if (!ok) {
+            // Common at autostart: shell isn't ready to accept registrations
+            // yet. Schedule a 500ms retry via WM_TIMER.
+            if (tray_retry_count_ < TRAY_MAX_RETRIES) {
+                ++tray_retry_count_;
+                PC_LOG_WARN(
+                    "Shell_NotifyIcon NIM_ADD/MODIFY failed (attempt {}/{}); "
+                    "retrying in 500ms",
+                    tray_retry_count_, TRAY_MAX_RETRIES);
+                SetTimer(hwnd_, TRAY_RETRY_TIMER_ID, 500, nullptr);
+            } else {
+                PC_LOG_ERROR(
+                    "Tray icon registration gave up after {} attempts",
+                    TRAY_MAX_RETRIES);
+            }
+            return;
+        }
+
+        // NOTIFYICON_VERSION_4 enables modern callback semantics (cursor pos
+        // in WM_TRAYICON's wParam, accessibility, etc.). Microsoft strongly
+        // recommends this; it's not persisted across sessions so call every
+        // time after a successful NIM_ADD.
+        nid_.uVersion = NOTIFYICON_VERSION_4;
+        Shell_NotifyIconW(NIM_SETVERSION, &nid_);
+
+        KillTimer(hwnd_, TRAY_RETRY_TIMER_ID);
+        tray_retry_count_ = 0;
+        tray_created_     = true;
     }
 
     void remove_tray_icon() {
@@ -452,6 +493,10 @@ private:
             auto* cs  = reinterpret_cast<CREATESTRUCT*>(lparam);
             auto* app = static_cast<webview_app*>(cs->lpCreateParams);
             SetWindowLongPtr(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(app));
+            // Subscribe to the shell's "TaskbarCreated" broadcast so we can
+            // re-register the tray icon if the shell is not yet ready when
+            // we first try (autostart) or restarts later (Explorer crash).
+            app->taskbar_created_msg_ = RegisterWindowMessageW(L"TaskbarCreated");
             return DefWindowProc(hwnd, msg, wparam, lparam);
         }
 
@@ -464,6 +509,16 @@ private:
 
         auto* app = reinterpret_cast<webview_app*>(GetWindowLongPtr(hwnd, GWLP_USERDATA));
         if (!app) return DefWindowProc(hwnd, msg, wparam, lparam);
+
+        // TaskbarCreated is a registered broadcast (id varies per session),
+        // so it has to be matched outside the switch.
+        if (app->taskbar_created_msg_ != 0 && msg == app->taskbar_created_msg_) {
+            PC_LOG_INFO("TaskbarCreated received; re-registering tray icon");
+            app->tray_created_     = false;
+            app->tray_retry_count_ = 0;
+            app->create_tray_icon();
+            return 0;
+        }
 
         switch (msg) {
             case WM_NCHITTEST: {
@@ -480,6 +535,13 @@ private:
             case WM_TRAYICON:           return app->on_trayicon(lparam);
             case WM_COMMAND:            return app->on_command(hwnd, wparam);
             case WM_PUSH_TO_FRONTEND:   return app->on_push_to_frontend(lparam);
+            case WM_TIMER:
+                if (wparam == TRAY_RETRY_TIMER_ID) {
+                    KillTimer(hwnd, TRAY_RETRY_TIMER_ID);
+                    app->create_tray_icon();
+                    return 0;
+                }
+                break;
             default:                    break;
         }
         return DefWindowProc(hwnd, msg, wparam, lparam);

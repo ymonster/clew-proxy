@@ -9,6 +9,7 @@
 
 #include <WinSock2.h>
 #include <Windows.h>
+#include <ole2.h>
 
 #include <chrono>
 #include <exception>
@@ -133,6 +134,19 @@ static int run_app(int argc, char** argv, HINSTANCE hinstance, bool default_gui_
         PC_LOG_ERROR("Failed to initialize Winsock");
         return 1;
     }
+
+    // WebView2 requires STA-initialized COM before env creation, and
+    // additionally uses OLE drag-drop in the host window. OleInitialize is a
+    // strict superset of CoInitializeEx(STA) that also primes OLE — this is
+    // what Microsoft's official WebView2APISample uses (see AppWindow.cpp).
+    // Without it the --minimized path hits CO_E_NOTINITIALIZED because
+    // SW_HIDE skips the SW_SHOW side-effect that would have implicitly
+    // initialized the apartment.
+    if (HRESULT hr = OleInitialize(nullptr); FAILED(hr)) {
+        PC_LOG_ERROR("OleInitialize failed: {:#x}", static_cast<unsigned int>(hr));
+        return 1;
+    }
+    clew::scoped_exit ole_guard{[] { OleUninitialize(); }};
 
     try {
         clew::app a{opts, hinstance};
