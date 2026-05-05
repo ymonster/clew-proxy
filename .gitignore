@@ -48,6 +48,9 @@ tasks/
 # User runtime config (contains personal proxy addresses, tokens)
 clew.json
 
+# Personal scratch folder for screenshots / dev artifacts
+debug_pics/
+
 # Local SonarCloud API dumps for offline review
 results.json
 dup.json
