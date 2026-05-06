@@ -82,7 +82,7 @@ static void setup_logger() {
         log_path,
         []() {
             quill::RotatingFileSinkConfig cfg;
-            cfg.set_open_mode('w');
+            cfg.set_open_mode('a');
             cfg.set_rotation_max_file_size(50 * 1024 * 1024);
             cfg.set_max_backup_files(5);
             return cfg;
