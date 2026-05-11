@@ -62,33 +62,37 @@ const selectedProcessName = computed(() => {
 })
 
 const columnDefs = computed<ColDef<NetworkConnection>[]>(() => {
+  const allProcsView = props.selectedPid == null
+
+  const pidCol: ColDef<NetworkConnection> = {
+    headerName: 'PID',
+    field: 'pid',
+    width: 75,
+    cellClass: 'font-mono',
+  }
+
+  // Every column except Process has a bounded max content width, so they get
+  // fixed widths sized to their longest value. Process is the only flex column
+  // — it absorbs all slack when the panel is wide and shrinks to minWidth when
+  // narrow, so the bounded columns never get squeezed (which is what forced the
+  // "double-click the header to auto-fit" dance before). In the per-PID view
+  // there is no Process column, so Remote flexes instead to fill the width.
   const cols: ColDef<NetworkConnection>[] = []
 
-  // Show process + PID columns when viewing all processes
-  if (props.selectedPid == null) {
+  if (allProcsView) {
     cols.push(
-      {
-        headerName: 'Process',
-        field: 'process_name',
-        minWidth: 120,
-        flex: 1,
-      },
-      {
-        headerName: 'PID',
-        field: 'pid',
-        width: 70,
-        maxWidth: 80,
-        cellClass: 'font-mono',
-      },
+      { headerName: 'Process', field: 'process_name', minWidth: 150, flex: 1 },
+      pidCol,
     )
+  } else {
+    cols.push(pidCol)
   }
 
   cols.push(
     {
       headerName: 'Proto',
       field: 'protocol',
-      width: 65,
-      maxWidth: 70,
+      width: 72,
       cellRenderer: (params: { value: string }) => {
         const v = params.value
         if (v === 'UDP') {
@@ -104,15 +108,13 @@ const columnDefs = computed<ColDef<NetworkConnection>[]>(() => {
         if (!params.data.remote_ip) return ''
         return `${params.data.remote_ip}:${params.data.remote_port}`
       },
-      minWidth: 160,
-      flex: 2,
+      ...(allProcsView ? { width: 210, minWidth: 150 } : { flex: 1, minWidth: 160 }),
       cellClass: 'font-mono',
     },
     {
       headerName: 'State',
       field: 'state',
-      width: 130,
-      maxWidth: 150,
+      width: 140,
       cellRenderer: (params: { value: string }) => {
         const value = params.value
         if (!value) return ''
@@ -123,8 +125,7 @@ const columnDefs = computed<ColDef<NetworkConnection>[]>(() => {
     {
       headerName: 'Proxy',
       field: 'proxy_status',
-      width: 110,
-      maxWidth: 120,
+      width: 100,
       cellRenderer: (params: { value: string }) => {
         const value = params.value
         if (value === 'PROXIED') {
@@ -137,24 +138,14 @@ const columnDefs = computed<ColDef<NetworkConnection>[]>(() => {
       },
     },
     {
+      // The header "Local Port" is the widest thing in this column (the value
+      // is at most 5 digits), so the width is sized to fit the label.
       headerName: 'Local Port',
       field: 'local_port',
-      width: 90,
-      maxWidth: 100,
+      width: 118,
       cellClass: 'font-mono',
     },
   )
-
-  // When a specific PID is selected, add PID column at front
-  if (props.selectedPid != null) {
-    cols.unshift({
-      headerName: 'PID',
-      field: 'pid',
-      width: 70,
-      maxWidth: 80,
-      cellClass: 'font-mono',
-    })
-  }
 
   return cols
 })
@@ -167,9 +158,18 @@ const defaultColDef = {
 const documentVisible = useDocumentVisibility()
 let timer: ReturnType<typeof setInterval> | null = null
 
+// pid 0 (Idle / orphaned TIME_WAIT sockets) and pid 4 (System / kernel SMB
+// etc.) are not interesting in the firehose "all processes" feed. Hide them
+// there; when a process is explicitly selected in the tree we still show
+// whatever it owns, including pid 0/4 if the user really clicked them.
+const SYSTEM_PIDS = new Set([0, 4])
+
 async function fetchConnections() {
   try {
-    rowData.value = await getNetworkConnections(props.selectedPid)
+    const conns = await getNetworkConnections(props.selectedPid)
+    rowData.value = props.selectedPid == null
+      ? conns.filter(c => !SYSTEM_PIDS.has(c.pid))
+      : conns
   } catch {
     // Backend not available
   }
