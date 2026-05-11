@@ -28,6 +28,21 @@ const rowData = ref<NetworkConnection[]>([])
 const filterText = ref('')
 const gridApi = shallowRef<GridApi | null>(null)
 
+// Stable row id: include local_ip so dual-stack sockets (IPv4 + IPv6 on the
+// same local_port for the same PID) get distinct rows. Without local_ip the
+// two collide and AG Grid reuses one DOM/class state for both, leaving stale
+// `dead-process-row` styling on the duplicate.
+const rowIdGetter = (params: { data: NetworkConnection }) =>
+  `${params.data.protocol}-${params.data.pid}-${params.data.local_ip}-${params.data.local_port}-${params.data.remote_ip}-${params.data.remote_port}`
+
+// Defined as a stable constant outside the template so vue doesn't allocate
+// a new object on every render (which would push AG Grid into a re-eval that
+// races with row data updates).
+const rowClassRules = {
+  'dead-process-row': (params: { data?: NetworkConnection }) =>
+    !!params.data && !params.data.pid_alive,
+}
+
 function stateDotColor(state: string): string {
   if (state === 'ESTABLISHED') return '#22c55e'
   if (state === 'BOUND') return '#a855f7'
@@ -227,8 +242,8 @@ onUnmounted(() => {
         :headerHeight="32"
         :suppressCellFocus="true"
         :animateRows="false"
-        :getRowId="(params: { data: NetworkConnection }) => `${params.data.protocol}-${params.data.pid}-${params.data.local_port}-${params.data.remote_ip}-${params.data.remote_port}`"
-        :getRowClass="(params: { data?: NetworkConnection }) => params.data && !params.data.pid_alive ? 'dead-process-row' : ''"
+        :getRowId="rowIdGetter"
+        :rowClassRules="rowClassRules"
         @grid-ready="onGridReady"
       />
     </template>
