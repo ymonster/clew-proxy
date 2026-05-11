@@ -9,6 +9,7 @@
 #include <iphlpapi.h>
 #include <windows.h>
 #include <cstddef>
+#include <limits>
 #include <vector>
 #include <string>
 #include "core/log.hpp"
@@ -16,6 +17,12 @@
 #pragma comment(lib, "iphlpapi.lib")
 
 namespace clew {
+
+// PID 0 (Idle) is a real Windows process selectable from the tree, so we can't
+// reuse 0 as the "no filter" sentinel for TCP/UDP table lookups. Use UINT_MAX
+// (no PID will ever equal it) instead. The pre-refactor code was overloading 0
+// for both meanings, which made selecting Idle return the entire OS table.
+inline constexpr DWORD NO_PID_FILTER = std::numeric_limits<DWORD>::max();
 
 struct tcp_connection {
     DWORD pid;
@@ -54,7 +61,7 @@ inline std::string ip_to_string(DWORD ip) {
 
 class tcp_table {
 public:
-    static std::vector<tcp_connection> get_connections(DWORD filter_pid = 0) {
+    static std::vector<tcp_connection> get_connections(DWORD filter_pid = NO_PID_FILTER) {
         std::vector<tcp_connection> result;
         DWORD size = 0;
 
@@ -78,7 +85,7 @@ public:
 
         for (DWORD i = 0; i < tcp_table->dwNumEntries; i++) {
             const auto& row = tcp_table->table[i];
-            if (filter_pid != 0 && row.dwOwningPid != filter_pid) continue;
+            if (filter_pid != NO_PID_FILTER && row.dwOwningPid != filter_pid) continue;
 
             tcp_connection conn;
             conn.pid = row.dwOwningPid;
@@ -97,7 +104,7 @@ public:
         std::vector<tcp_connection> result;
         if (pids.empty()) return result;
 
-        auto all = get_connections(0);
+        auto all = get_connections(NO_PID_FILTER);
         for (const auto& conn : all) {
             for (DWORD pid : pids) {
                 if (conn.pid == pid) {

@@ -12,6 +12,7 @@
 #include <vector>
 #include <string>
 #include "core/log.hpp"
+#include "process/tcp_table.hpp"  // NO_PID_FILTER + ip_to_string
 
 #pragma comment(lib, "iphlpapi.lib")
 
@@ -25,7 +26,7 @@ struct udp_endpoint {
 
 class udp_table {
 public:
-    static std::vector<udp_endpoint> get_endpoints(DWORD filter_pid = 0) {
+    static std::vector<udp_endpoint> get_endpoints(DWORD filter_pid = NO_PID_FILTER) {
         std::vector<udp_endpoint> result;
         DWORD size = 0;
 
@@ -49,7 +50,7 @@ public:
 
         for (DWORD i = 0; i < table->dwNumEntries; i++) {
             const auto& row = table->table[i];
-            if (filter_pid != 0 && row.dwOwningPid != filter_pid) continue;
+            if (filter_pid != NO_PID_FILTER && row.dwOwningPid != filter_pid) continue;
 
             udp_endpoint ep;
             ep.pid = row.dwOwningPid;

@@ -117,7 +117,11 @@ connection_service::connection_service(strand_bound_manager& exec, UdpPortTracke
     : exec_(exec), udp_tracker_(udp_tracker) {}
 
 nlohmann::json connection_service::list_tcp(std::optional<std::uint32_t> pid_filter) const {
-    DWORD filter_pid = pid_filter ? static_cast<DWORD>(*pid_filter) : 0;
+    // NO_PID_FILTER (= UINT_MAX) is the "no filter, return all" sentinel.
+    // We can't reuse 0 because PID 0 (Idle) is a real selectable process —
+    // collapsing nullopt and optional(0) onto 0 would make selecting Idle
+    // dump the whole OS connection table.
+    DWORD filter_pid = pid_filter ? static_cast<DWORD>(*pid_filter) : NO_PID_FILTER;
     auto connections = tcp_table::get_connections(filter_pid);
 
     return exec_.query([&connections, filter_pid](const domain::process_tree_manager& m) -> nlohmann::json {
@@ -126,7 +130,7 @@ nlohmann::json connection_service::list_tcp(std::optional<std::uint32_t> pid_fil
         const auto& rules = m.rules();
 
         for (const auto& conn : connections) {
-            if (filter_pid == 0 &&
+            if (filter_pid == NO_PID_FILTER &&
                 (conn.state == "LISTEN" ||
                  (conn.remote_ip == "0.0.0.0" && conn.remote_port == 0))) {
                 continue;
@@ -138,7 +142,7 @@ nlohmann::json connection_service::list_tcp(std::optional<std::uint32_t> pid_fil
 }
 
 nlohmann::json connection_service::list_udp(std::optional<std::uint32_t> pid_filter) const {
-    DWORD filter_pid = pid_filter ? static_cast<DWORD>(*pid_filter) : 0;
+    DWORD filter_pid = pid_filter ? static_cast<DWORD>(*pid_filter) : NO_PID_FILTER;
     auto endpoints = udp_table::get_endpoints(filter_pid);
     const UdpPortTracker* tracker = udp_tracker_;
 
@@ -148,7 +152,7 @@ nlohmann::json connection_service::list_udp(std::optional<std::uint32_t> pid_fil
         const auto& rules = m.rules();
 
         for (const auto& ep : endpoints) {
-            if (ep.local_port == 0 && filter_pid == 0) continue;
+            if (ep.local_port == 0 && filter_pid == NO_PID_FILTER) continue;
             arr.push_back(udp_entry_to_json(ep, tree, rules, tracker));
         }
         return arr;
