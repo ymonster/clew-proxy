@@ -3,9 +3,14 @@
 // Tests core data structures and logic without admin/drivers.
 //
 // Build (VS2022 dev prompt):
-//   cl /EHsc /std:c++23 /DUNICODE /D_UNICODE /I../src /I<vcpkg>/installed/x64-windows/include test_components.cpp /Fe:test_components.exe
+//   cl /EHsc /std:c++latest /utf-8 /DUNICODE /D_UNICODE /D_WIN32_WINNT=0x0A00 /DNOMINMAX ^
+//      /I../src /I"%VCPKG_ROOT%/installed/x64-windows/include" ^
+//      test_components.cpp ^
+//      /link /LIBPATH:"%VCPKG_ROOT%/installed/x64-windows/lib" ws2_32.lib
 //
-// Or via CMake (see CMakeLists.txt test target)
+// /std:c++23 isn't recognized by VS2022 14.44 — use /std:c++latest.
+// /DNOMINMAX — quill/std::numeric_limits collides with windows.h max() macro.
+// /utf-8 — file contains UTF-8 (CN comments); cp 936 default mis-parses.
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -13,14 +18,16 @@
 #include <winsock2.h>
 #include <windows.h>
 
-#include "core/log.hpp"
-
+#include <cstddef>
 #include <iostream>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <cassert>
 #include <functional>
 #include <sstream>
+
+#include "core/log.hpp"
 
 // Components under test
 #include "config/types.hpp"
@@ -141,21 +148,55 @@ TEST(cmdline_empty_pattern) {
 // ============================================================
 
 using clew::flat_tree;
-using clew::raw_process_record;
 using clew::INVALID_IDX;
 using clew::NO_PROXY;
+using clew::ROOT_PSN_SENTINEL;
+
+// Test helpers — translate legacy add/tombstone signatures (pre-PSN refactor)
+// onto the new PSN-keyed interface. PSNs are assigned monotonically per
+// add_test_entry invocation; parent_psn is looked up from side_map.
+static uint64_t g_next_test_psn = 1;
+
+static uint32_t add_test_entry(flat_tree& t, DWORD pid, DWORD parent_pid,
+                               FILETIME ft, const wchar_t* name) {
+    uint64_t my_psn = g_next_test_psn++;
+    uint64_t parent_psn = ROOT_PSN_SENTINEL;
+    if (parent_pid != 0) {
+        auto& sm = t.side_map();
+        if (auto it = sm.find(parent_pid); it != sm.end()) {
+            parent_psn = it->second.psn;
+        }
+    }
+    uint32_t idx = t.add_entry(pid, parent_pid, my_psn, parent_psn, ft, name);
+    if (parent_psn == ROOT_PSN_SENTINEL || parent_pid == 0) {
+        t.mark_root(idx);
+    } else {
+        uint32_t pidx = t.find_by_pid_psn(parent_pid, parent_psn);
+        if (pidx != INVALID_IDX) {
+            t.attach_child(pidx, idx);
+        } else {
+            t.mark_root(idx);
+        }
+    }
+    return idx;
+}
+
+static bool tombstone_by_pid(flat_tree& t, DWORD pid) {
+    auto& sm = t.side_map();
+    auto it = sm.find(pid);
+    if (it == sm.end()) return false;
+    return t.tombstone(pid, it->second.psn);
+}
 
 static flat_tree make_test_tree() {
     flat_tree tree;
-    std::vector<raw_process_record> records = {
-        {4,    0,    {}, L"System"},
-        {100,  4,    {}, L"init.exe"},
-        {200,  100,  {}, L"chrome.exe"},
-        {201,  200,  {}, L"chrome.exe"},
-        {202,  200,  {}, L"chrome.exe"},
-        {300,  100,  {}, L"python.exe"},
-    };
-    tree.build_from_snapshot(records);
+    FILETIME ft{};
+    add_test_entry(tree, 4,   0,   ft, L"System");
+    add_test_entry(tree, 100, 4,   ft, L"init.exe");
+    add_test_entry(tree, 200, 100, ft, L"chrome.exe");
+    add_test_entry(tree, 201, 200, ft, L"chrome.exe");
+    add_test_entry(tree, 202, 200, ft, L"chrome.exe");
+    add_test_entry(tree, 300, 100, ft, L"python.exe");
     return tree;
 }
 
@@ -186,7 +227,7 @@ TEST(tree_add_entry) {
     auto tree = make_test_tree();
     uint32_t old_count = tree.alive_count();
     FILETIME ft = {};
-    tree.add_entry(400, 200, ft, L"helper.exe");
+    add_test_entry(tree, 400, 200, ft, L"helper.exe");
     ASSERT_EQ(tree.alive_count(), old_count + 1);
     uint32_t idx = tree.find_by_pid(400);
     ASSERT_TRUE(idx != INVALID_IDX);
@@ -196,8 +237,7 @@ TEST(tree_add_entry) {
 TEST(tree_tombstone) {
     auto tree = make_test_tree();
     uint32_t count_before = tree.alive_count();
-    FILETIME ft = {};
-    tree.tombstone(300, ft);  // Remove python.exe
+    tombstone_by_pid(tree, 300);  // Remove python.exe
     ASSERT_EQ(tree.alive_count(), count_before - 1);
     // PID still findable but marked dead
     uint32_t idx = tree.find_by_pid(300);
@@ -219,11 +259,10 @@ TEST(tree_visit_descendants) {
 
 TEST(tree_compact) {
     auto tree = make_test_tree();
-    FILETIME ft = {};
     // Tombstone several entries
-    tree.tombstone(201, ft);
-    tree.tombstone(202, ft);
-    tree.tombstone(300, ft);
+    tombstone_by_pid(tree, 201);
+    tombstone_by_pid(tree, 202);
+    tombstone_by_pid(tree, 300);
     uint32_t alive_before = tree.alive_count();
     tree.compact();
     ASSERT_EQ(tree.alive_count(), alive_before);
@@ -299,7 +338,7 @@ TEST(rule_on_process_start) {
 
     // Simulate new python process starting
     FILETIME ft = {};
-    uint32_t idx = tree.add_entry(500, 100, ft, L"python.exe");
+    uint32_t idx = add_test_entry(tree, 500, 100, ft, L"python.exe");
     auto match = engine.on_process_start(tree, idx);
     ASSERT_TRUE(match.has_value());
     ASSERT_EQ(match.value(), std::string("rule_py_rule"));
@@ -368,6 +407,11 @@ TEST(rule_on_process_exit) {
 // After compact, rebuild_lc_rs_links uses stale parent_pid → wrong topology.
 // Then apply_auto_rules expands descendants of wrong subtree.
 TEST(bug_reparent_stale_parent_pid_after_compact) {
+    // Post-PSN refactor: parent_psn (NOT parent_pid) is the disambiguating
+    // tag during rebuild_lc_rs_links. PID-reuse no longer corrupts topology
+    // because the new PID owner has a fresh PSN that doesn't match the
+    // dead launcher's PSN.
+    //
     // Tree:
     //   System(4)
     //   ├── spotify.exe(100)
@@ -375,14 +419,12 @@ TEST(bug_reparent_stale_parent_pid_after_compact) {
     //   └── launcher.exe(200)
     //       └── chrome.exe(300)   ← Google Chrome browser
     flat_tree tree;
-    std::vector<raw_process_record> records = {
-        {4,    0,    {}, L"System"},
-        {100,  4,    {}, L"spotify.exe"},
-        {101,  100,  {}, L"chrome.exe"},   // Spotify child
-        {200,  4,    {}, L"launcher.exe"},  // Chrome launcher
-        {300,  200,  {}, L"chrome.exe"},    // Google Chrome, parent=200
-    };
-    tree.build_from_snapshot(records);
+    FILETIME ft = {};
+    add_test_entry(tree, 4,   0,   ft, L"System");
+    add_test_entry(tree, 100, 4,   ft, L"spotify.exe");
+    add_test_entry(tree, 101, 100, ft, L"chrome.exe");    // Spotify child
+    add_test_entry(tree, 200, 4,   ft, L"launcher.exe");  // Chrome launcher
+    add_test_entry(tree, 300, 200, ft, L"chrome.exe");    // Google Chrome, parent=200
 
     // Apply hack_tree rule for spotify.exe → matches PID 100, expands to 101
     rule_engine_v3 engine;
@@ -394,117 +436,82 @@ TEST(bug_reparent_stale_parent_pid_after_compact) {
     ASSERT_TRUE(tree.at(tree.find_by_pid(101)).is_proxied());  // spotify's chrome
     ASSERT_FALSE(tree.at(tree.find_by_pid(300)).is_proxied()); // Google Chrome NOT proxied
 
-    // Now launcher.exe(200) dies → chrome.exe(300) reparented to System(4)
-    // parent_index updated to System, but parent_pid stays 200 (stale!)
-    FILETIME ft = {};
-    tree.tombstone(200, ft);
+    // launcher.exe(200) dies → chrome.exe(300) reparented to System(4)
+    tombstone_by_pid(tree, 200);
 
-    // Verify reparent happened (parent_index AND parent_pid updated)
     uint32_t chrome_idx = tree.find_by_pid(300);
     ASSERT_TRUE(chrome_idx != INVALID_IDX);
-    // parent_pid should now be 4 (System), not 200 (dead launcher)
     ASSERT_EQ(tree.at(chrome_idx).parent_pid, (DWORD)4);
 
-    // Now PID 200 gets recycled as a Spotify chrome.exe child
-    FILETIME ft2 = {1, 0};  // different create_time
-    tree.add_entry(200, 100, ft2, L"chrome.exe");  // new chrome.exe under spotify
-
-    // Re-apply rules (simulates config change or periodic rescan)
+    // Now PID 200 gets recycled as a Spotify chrome.exe child.
+    // The new entry gets a fresh PSN (post-launcher), so even though
+    // chrome.exe(300) still has parent_pid=200 from rebuild's view, the
+    // parent_psn field on chrome(300) points to the now-dead launcher's
+    // PSN and won't match the new entry.
+    add_test_entry(tree, 200, 100, ft, L"chrome.exe");
     engine.apply_auto_rules(tree);
-
-    // New PID 200 (spotify's chrome) should be proxied ← correct
     ASSERT_TRUE(tree.at(tree.find_by_pid(200)).is_proxied());
 
-    // Now trigger compact to force rebuild_lc_rs_links
-    // Need enough tombstones: tombstone the old 200 entry already happened,
-    // let's add more to trigger threshold
-    tree.add_entry(501, 4, ft, L"tmp1.exe");
-    tree.add_entry(502, 4, ft, L"tmp2.exe");
-    tree.tombstone(501, ft);
-    tree.tombstone(502, ft);
+    // Trigger compact (need enough tombstones for the 20% threshold).
+    add_test_entry(tree, 501, 4, ft, L"tmp1.exe");
+    add_test_entry(tree, 502, 4, ft, L"tmp2.exe");
+    tombstone_by_pid(tree, 501);
+    tombstone_by_pid(tree, 502);
     tree.compact();
 
-    // After compact + rebuild_lc_rs_links:
-    // chrome.exe(300) has parent_pid=200 (stale, pointing to OLD launcher)
-    // But side_map[200] now points to NEW chrome.exe(200) (spotify's child)
-    // → rebuild links chrome.exe(300) as child of spotify's chrome.exe(200)!
-    // → chrome.exe(300) is now topologically under spotify's subtree
-
-    // Re-apply rules after compact
+    // After compact + rebuild_lc_rs_links: chrome.exe(300) was reparented
+    // to System(4) by reparent_children — its parent_psn now points to
+    // System's PSN. The new chrome.exe(200) has an unrelated PSN.
+    // rebuild matches by parent_psn, so chrome(300) correctly lands under
+    // System.
     engine.apply_auto_rules(tree);
-
-    // FIXED: Google Chrome (PID 300) should NOT be proxied
-    // reparent_children now syncs parent_pid, so rebuild_lc_rs_links
-    // correctly links PID 300 to System(4), not spotify's chrome.exe(200)
-    bool chrome300_proxied = tree.at(tree.find_by_pid(300)).is_proxied();
-    ASSERT_FALSE(chrome300_proxied);
+    ASSERT_FALSE(tree.at(tree.find_by_pid(300)).is_proxied());
 }
 
 // Bug 2: on_process_start tree inheritance uses parent_pid (can be stale/recycled)
 // A new process whose parent_pid was once in matched_pids gets incorrectly inherited.
 TEST(bug_tree_inherit_stale_matched_pid) {
+    // Same scenario as before — the rule engine still uses parent_pid for
+    // tree inheritance lookups. The PSN refactor doesn't fix this codepath
+    // (the matched_pids set is keyed by PID), so behavior unchanged here.
+    //
     // Tree:
     //   System(4)
     //   ├── spotify.exe(100)
     //   │   └── chrome.exe(101)
     //   └── explorer.exe(50)
     flat_tree tree;
-    std::vector<raw_process_record> records = {
-        {4,    0,    {}, L"System"},
-        {50,   4,    {}, L"explorer.exe"},
-        {100,  4,    {}, L"spotify.exe"},
-        {101,  100,  {}, L"chrome.exe"},
-    };
-    tree.build_from_snapshot(records);
+    FILETIME ft = {};
+    add_test_entry(tree, 4,   0,   ft, L"System");
+    add_test_entry(tree, 50,  4,   ft, L"explorer.exe");
+    add_test_entry(tree, 100, 4,   ft, L"spotify.exe");
+    add_test_entry(tree, 101, 100, ft, L"chrome.exe");
 
-    // Apply hack_tree rule for spotify.exe
     rule_engine_v3 engine;
     engine.set_auto_rules({make_rule("spotify", "spotify.exe", true, 1)});
     engine.apply_auto_rules(tree);
 
-    // chrome.exe(101) is in matched_pids (tree-inherited from spotify)
     ASSERT_TRUE(tree.at(tree.find_by_pid(101)).is_proxied());
     ASSERT_TRUE(engine.auto_rules()[0].matched_pids.count(101) > 0);
 
-    // chrome.exe(101) dies
-    FILETIME ft = {};
-    tree.tombstone(101, ft);
+    tombstone_by_pid(tree, 101);
     engine.on_process_exit(101);
-    // PID 101 removed from matched_pids
     ASSERT_TRUE(engine.auto_rules()[0].matched_pids.count(101) == 0);
 
-    // PID 101 gets recycled: new unrelated process with parent=explorer
-    FILETIME ft2 = {1, 0};
-    uint32_t new_idx = tree.add_entry(101, 50, ft2, L"notepad.exe");
-
-    // on_process_start checks tree inheritance:
-    // entry.parent_pid = 50 (explorer), not in matched_pids → no tree match
-    // This case is actually SAFE (parent_pid is correct for the new process)
+    // PID 101 recycled with explorer parent — should NOT match spotify rule.
+    uint32_t new_idx = add_test_entry(tree, 101, 50, ft, L"notepad.exe");
     auto match = engine.on_process_start(tree, new_idx);
-    ASSERT_FALSE(match.has_value());  // Correct: notepad should not match
+    ASSERT_FALSE(match.has_value());
 
-    // But what if the timing is different: PID 101 recycled BEFORE on_process_exit?
-    // Simulate: re-add chrome.exe(101) as spotify child, put back in matched_pids
-    tree.tombstone(101, ft2);
-    FILETIME ft3 = {2, 0};
-    tree.add_entry(101, 100, ft3, L"chrome.exe");
+    // Edge case: re-add chrome(101) under spotify, PID 999 child claims 101.
+    tombstone_by_pid(tree, 101);
+    add_test_entry(tree, 101, 100, ft, L"chrome.exe");
     engine.apply_auto_rules(tree);
     ASSERT_TRUE(engine.auto_rules()[0].matched_pids.count(101) > 0);
 
-    // Now a NEW process starts claiming parent_pid=101
-    // This could be Google Chrome spawning a child whose parent happened to be
-    // a recycled PID that's now a Spotify process
-    FILETIME ft4 = {3, 0};
-    uint32_t child_idx = tree.add_entry(999, 101, ft4, L"gpu-process.exe");
+    uint32_t child_idx = add_test_entry(tree, 999, 101, ft, L"gpu-process.exe");
     auto match2 = engine.on_process_start(tree, child_idx);
-
-    // gpu-process.exe(999) gets tree-inherited from chrome.exe(101) which is
-    // in spotify's matched_pids. This is CORRECT if 999 is truly a child of 101.
-    // The structural issue is that parent_pid=101 might be stale after reparenting,
-    // but in this direct case it's actually correct behavior.
-    ASSERT_TRUE(match2.has_value());  // Expected: tree-inherited
-
-    // The real danger is Bug 1 (compact+rebuild) which is more deterministic
+    ASSERT_TRUE(match2.has_value());  // Tree-inherited from chrome(101)
 }
 
 // ============================================================

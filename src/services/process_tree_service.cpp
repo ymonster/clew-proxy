@@ -51,6 +51,12 @@ nlohmann::json process_tree_service::find_process(std::uint32_t pid) const {
         const auto& tree = m.tree();
         uint32_t idx = tree.find_by_pid(static_cast<DWORD>(pid));
         if (idx == INVALID_IDX) return {};
+        // try_at: bounds-safe deref. Without it, a stale idx (PID-reuse race
+        // or stale post-tombstone state) would deref past entries_.size()
+        // and trigger 0xc0000005 + 0xffffbaad heap corruption — the
+        // sticky-tree-bug wininit-1032 crash signature.
+        const auto* entry = tree.try_at(idx);
+        if (!entry || !entry->alive) return {};
         return process_entry_to_json(tree, m.rules(), idx, true);
     });
     if (result.is_null() || result.empty()) {
@@ -64,6 +70,8 @@ nlohmann::json process_tree_service::find_process_detail(std::uint32_t pid) cons
         const auto& tree = m.tree();
         uint32_t idx = tree.find_by_pid(static_cast<DWORD>(pid));
         if (idx == INVALID_IDX) return {};
+        const auto* entry = tree.try_at(idx);
+        if (!entry || !entry->alive) return {};
         return process_entry_to_json(tree, m.rules(), idx, true);
     });
     if (result.is_null() || result.empty()) {
@@ -85,7 +93,9 @@ nlohmann::json process_tree_service::list_hijacked() const {
         for (DWORD pid : pids) {
             uint32_t idx = tree.find_by_pid(pid);
             if (idx == INVALID_IDX) continue;
-            const auto& e = tree.at(idx);
+            const auto* ep = tree.try_at(idx);
+            if (!ep || !ep->alive) continue;
+            const auto& e = *ep;
             auto match = rules.get_match_info(tree, pid);
             nlohmann::json p;
             p["pid"]            = pid;

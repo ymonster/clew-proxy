@@ -77,9 +77,18 @@ void process_projection::replay_to_frontend() {
 }
 
 void process_projection::refresh_snapshot() {
-    auto snap = std::make_shared<const std::string>(
-        process_tree_to_json_string(mgr_.tree(), mgr_.rules()));
-    snapshot_.store(std::move(snap));
+    auto json_str = process_tree_to_json_string(mgr_.tree(), mgr_.rules());
+    // CLEW_DEBUG_DIAG_BEGIN — sticky tree bug bisect 2026-05-07, REMOVE after
+    std::size_t pid_count = 0;
+    for (std::size_t pos = 0;
+         (pos = json_str.find("\"pid\":", pos)) != std::string::npos;
+         ++pos) {
+        ++pid_count;
+    }
+    PC_LOG_INFO("[projection] snapshot: {} bytes, {} entries, alive={}",
+                json_str.size(), pid_count, mgr_.tree().alive_count());
+    // CLEW_DEBUG_DIAG_END
+    snapshot_.store(std::make_shared<const std::string>(std::move(json_str)));
 }
 
 void process_projection::push_current_snapshot() {
