@@ -51,6 +51,11 @@ private:
     std::function<void()> on_close_;
     std::function<void(int, int, int, int)> on_move_resize_;
     bool initialized_ = false;
+    // Controller lifecycle, distinct from `initialized_` (= "navigated"). Drives
+    // ensure_webview_initialized()'s idempotent (re)try. UI-thread only: every
+    // WebView2 completion handler posts back to this thread's message loop.
+    enum class wv_state { not_started, in_progress, ready, failed };
+    wv_state wv_state_ = wv_state::not_started;
     bool close_to_tray_ = false;
     bool devtools_enabled_ = true;
     bool start_minimized_ = false;  // launch directly into tray (autostart use case)
@@ -109,6 +114,7 @@ private:
                 [this](HRESULT result, ICoreWebView2Environment* env) -> HRESULT {
                     if (FAILED(result)) {
                         PC_LOG_ERROR("Failed to create WebView2 environment: {:#x}", static_cast<unsigned int>(result));
+                        wv_state_ = wv_state::failed;
                         return result;
                     }
                     return env->CreateCoreWebView2Controller(
@@ -117,6 +123,7 @@ private:
                             [this](HRESULT result, ICoreWebView2Controller* controller) -> HRESULT {
                                 if (FAILED(result) || !controller) {
                                     PC_LOG_ERROR("Failed to create WebView2 controller: {:#x}", static_cast<unsigned int>(result));
+                                    wv_state_ = wv_state::failed;
                                     return result;
                                 }
                                 webview_controller_ = controller;
@@ -213,6 +220,7 @@ private:
                                     PC_LOG_INFO("WebView2 initialized, navigating to {}", url_utf8);
                                 }
                                 initialized_ = true;
+                                wv_state_ = wv_state::ready;
                                 return S_OK;
                             }
                         ).Get()
@@ -223,6 +231,7 @@ private:
 
         if (FAILED(hr)) {
             PC_LOG_ERROR("CreateCoreWebView2EnvironmentWithOptions failed: {:#x}", static_cast<unsigned int>(hr));
+            wv_state_ = wv_state::failed;
         }
     }
 
@@ -244,6 +253,23 @@ private:
 
     void resize_webview() {}
 #endif
+
+    // Idempotent, event-driven WebView2 (re)initialization chokepoint. Replaces
+    // eager init at window creation so the controller is built when the shell is
+    // ready (first user show, or TaskbarCreated) — avoiding the early-logon
+    // 0x80070490 controller failure on elevated autostart. initialize_webview()
+    // builds a fresh environment each call, satisfying MS's "recreate the
+    // environment on retry" contract; on 0x80070490 no controller/webview member
+    // is held, so a failed attempt leaves nothing to release.
+    void ensure_webview_initialized() {
+#ifdef CLEW_HAS_WEBVIEW2
+        if (wv_state_ == wv_state::in_progress || wv_state_ == wv_state::ready) return;
+        wv_state_ = wv_state::in_progress;   // not_started or failed -> (re)attempt
+        initialize_webview();                // async; callbacks flip to ready/failed
+#else
+        initialize_webview();
+#endif
+    }
 
     void create_tray_icon() {
         if (tray_created_) return;
@@ -318,6 +344,12 @@ private:
         ShowWindow(hwnd_, SW_RESTORE);
         SetForegroundWindow(hwnd_);
         set_visible(true);
+        // Tray-only autostart deferred WebView2 init — build the controller now
+        // that the user is opening the window (shell is long ready, no 0x80070490).
+        // Idempotent: no-op once ready/in-progress. Called here (not inside
+        // set_visible) so it's independent of set_visible's currently_visible_
+        // early-return — a show always guarantees a controller.
+        ensure_webview_initialized();
     }
 
     // Single chokepoint for visibility transitions. Drives both the
@@ -517,6 +549,11 @@ private:
             app->tray_created_     = false;
             app->tray_retry_count_ = 0;
             app->create_tray_icon();
+            // Shell is now ready. If the WebView2 controller previously failed
+            // (early-logon 0x80070490 on visible autostart), retry now — event-
+            // driven, no polling. Tray-only stays lazy: only `failed` recovers,
+            // so an unopened tray app doesn't spin up WebView2 here.
+            if (app->wv_state_ == wv_state::failed) app->ensure_webview_initialized();
             return 0;
         }
 
@@ -667,7 +704,10 @@ public:
             UpdateWindow(hwnd_);
         }
         create_tray_icon();
-        initialize_webview();
+        if (!start_minimized_) {
+            ensure_webview_initialized();  // visible startup: attempt now (after SW_SHOW)
+        }
+        // tray-only: defer until first show (restore_window) or TaskbarCreated.
 
         PC_LOG_INFO("WebView window created ({}x{}, frameless, {})",
                     width_, height_, start_minimized_ ? "tray-only" : "visible");
