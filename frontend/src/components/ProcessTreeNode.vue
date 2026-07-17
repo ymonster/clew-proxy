@@ -147,8 +147,11 @@ function onUnhack(e: Event) {
         </div>
       </div>
 
-      <!-- Icon + Hijack dot + Name + PID + actions -->
-      <div class="flex-1 min-w-0 flex items-start gap-2">
+      <!-- Icon + Hijack dot + Name + PID + actions.
+           No min-w-0: the row must NOT shrink the name below its content width —
+           instead a long/deep name widens the row and the tree scrolls
+           horizontally (parent container is w-max + overflow-auto). -->
+      <div class="flex-1 flex items-start gap-2">
         <img
           v-if="!iconFailed"
           :src="iconUrl"
@@ -165,10 +168,10 @@ function onUnhack(e: Event) {
           class="size-2 rounded-full bg-emerald-500 shrink-0 mt-[5px]"
           :title="manualHijack ? 'Manual hijack' : 'Auto hijack'"
         />
-        <div class="flex-1 min-w-0 flex flex-col">
+        <div class="flex-1 flex flex-col">
           <!-- Row 1: Name + PID + action buttons -->
-          <div class="flex justify-between items-center leading-tight">
-            <span class="truncate font-mono tracking-tight transition-opacity" :class="[nameClass, textDim]">
+          <div class="flex justify-between items-center leading-tight gap-2">
+            <span class="whitespace-nowrap font-mono tracking-tight transition-opacity" :class="[nameClass, textDim]">
               {{ node.name }}
             </span>
             <div class="flex items-center gap-1 shrink-0 ml-2">
@@ -236,7 +239,7 @@ function onUnhack(e: Event) {
          the last child cleanly stops at its corner (no dangling vertical). -->
     <div
       v-if="hasChildren && expanded"
-      class="ml-[18px] pl-3"
+      class="ml-[10px] pl-3"
     >
       <template v-for="(child, idx) in children" :key="child.pid">
         <div class="relative mt-0.5">

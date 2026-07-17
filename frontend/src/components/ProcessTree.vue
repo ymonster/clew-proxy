@@ -306,8 +306,11 @@ function isAutoHijacked(node: ProcessInfo): boolean {
     </div>
 
     <!-- Process Tree -->
-    <div class="flex-1 overflow-y-auto select-none thin-scrollbar">
-      <div class="pt-2 px-2 pb-4">
+    <div class="flex-1 overflow-auto select-none thin-scrollbar">
+      <!-- w-max lets deeply-indented rows keep their natural width (so the
+           horizontal scrollbar can reveal full names); min-w-full keeps the
+           content filling the panel when it's narrower than the panel. -->
+      <div class="pt-2 px-2 pb-4 w-max min-w-full">
         <template v-if="filteredProcesses.length > 0">
           <ProcessTreeNode
             v-for="node in filteredProcesses"

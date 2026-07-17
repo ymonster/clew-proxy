@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, shallowRef, defineAsyncComponent, watch } from 'vue'
 import { Tabs, TabsContent } from '@/components/ui/tabs'
+import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import ProcessTree from '@/components/ProcessTree.vue'
 import ProcessContextHeader from '@/components/ProcessContextHeader.vue'
@@ -289,14 +290,23 @@ onUnmounted(() => {
       <!-- ==================== MAIN BODY ==================== -->
       <div class="flex flex-1 overflow-hidden relative">
 
-        <!-- ==================== LEFT SIDEBAR ==================== -->
-        <aside class="relative flex flex-col border-r border-slate-200 dark:border-slate-800 shrink-0 bg-slate-50 dark:bg-[#18181b]/50 transition-colors" style="width: 300px; min-width: 200px;">
-          <ProcessTree class="flex-1 min-h-0" @select="onSelectProcess" />
-        </aside>
+        <!-- ============ RESIZABLE SPLIT: process tree | main area ============ -->
+        <ResizablePanelGroup direction="horizontal" auto-save-id="clew-main-split" class="flex-1 min-h-0">
+          <!-- LEFT: process tree -->
+          <ResizablePanel
+            :default-size="24"
+            :min-size="16"
+            :max-size="45"
+            class="flex flex-col min-h-0 border-r border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-[#18181b]/50 transition-colors"
+          >
+            <ProcessTree class="flex-1 min-h-0" @select="onSelectProcess" />
+          </ResizablePanel>
 
-        <!-- ==================== RIGHT MAIN AREA ==================== -->
-        <main class="flex-1 flex flex-col bg-white dark:bg-[#09090b] min-w-0 transition-colors overflow-hidden">
-          <Tabs v-model="activeTab" class="flex flex-col flex-1 min-h-0">
+          <ResizableHandle with-handle />
+
+          <!-- RIGHT: tabs -->
+          <ResizablePanel :min-size="40" class="flex flex-col min-h-0 bg-white dark:bg-[#09090b] overflow-hidden transition-colors">
+            <Tabs v-model="activeTab" class="flex flex-col flex-1 min-h-0">
 
             <!-- Tab navigation (h-12) — match mockup exactly -->
             <nav class="h-12 flex px-4 border-b border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-[#18181b]/50 transition-colors shrink-0">
@@ -350,7 +360,8 @@ onUnmounted(() => {
               </Suspense>
             </TabsContent>
           </Tabs>
-        </main>
+          </ResizablePanel>
+        </ResizablePanelGroup>
       </div>
 
       <!-- ==================== FOOTER (h-8) ==================== -->
