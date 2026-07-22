@@ -74,6 +74,7 @@ app::app(const cli_options& opts, HINSTANCE hinstance)
     PC_LOG_INFO("io_context with {} worker threads", num_workers_);
 
     tree_mgr_.rules().set_auto_rules(config_.get_v2().auto_rules);
+    tree_mgr_.rules().set_default_exclude_cidrs(config_.get_v2().default_exclude_cidrs);
     PC_LOG_INFO("Loaded {} auto rules", config_.get_v2().auto_rules.size());
 
     sync_groups();
@@ -82,7 +83,8 @@ app::app(const cli_options& opts, HINSTANCE hinstance)
     redirect_port_ = acceptor_.start();
     PC_LOG_INFO("Acceptor listening on port {}", redirect_port_);
 
-    wd_socket_      = std::make_unique<windivert_socket>(ioc_, strand_, tree_mgr_.tree(), *port_tracker_);
+    wd_socket_      = std::make_unique<windivert_socket>(ioc_, strand_, tree_mgr_.tree(),
+                                                         tree_mgr_.rules(), *port_tracker_);
     wd_network_     = std::make_unique<windivert_network>(*port_tracker_, redirect_port_);
     wd_socket_udp_  = std::make_unique<windivert_socket_udp>(ioc_, strand_, tree_mgr_.tree(),
                                                               tree_mgr_.rules(), *udp_port_tracker_);
@@ -154,7 +156,9 @@ void app::wire_observers() {
     cfg_store_.subscribe(
         [this](const ConfigV2& cfg, config_change /*tag*/) {
             try {
-                exec_.command([rules = cfg.auto_rules](domain::process_tree_manager& m) {
+                exec_.command([rules = cfg.auto_rules,
+                               excludes = cfg.default_exclude_cidrs](domain::process_tree_manager& m) {
+                    m.rules().set_default_exclude_cidrs(excludes);
                     m.apply_auto_rules_from_config(rules);
                 });
             } catch (const api_exception& e) {

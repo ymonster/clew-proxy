@@ -130,14 +130,27 @@ private:
             uint16_t src_port = ntohs(udp->SrcPort);
 
             // Check if this port is tracked for UDP proxy
-            if (!tracker_.is_active(src_port)) {
+            auto tracked = tracker_.get(src_port);
+            if (!tracked) {
                 // Not tracked — passthrough
                 WinDivertSend(handle_, pkt_buf, pkt_len, nullptr, &addr);
                 pass_count_.fetch_add(1, std::memory_order_relaxed);
                 continue;
             }
 
-            const auto& te = tracker_.peek(src_port);
+            const auto& te = *tracked;
+
+            const auto exclude_reason = udp_ip_exclude_reason(te, ip->DstAddr);
+            if (exclude_reason != IpExcludeReason::none) {
+                WinDivertSend(handle_, pkt_buf, pkt_len, nullptr, &addr);
+                pass_count_.fetch_add(1, std::memory_order_relaxed);
+                PC_LOG_DEBUG("[WD-NET-UDP] Direct PID={} port={} -> {}:{} reason={}",
+                             te.pid, src_port,
+                             CidrRange::uint_to_ip(ntohl(ip->DstAddr)),
+                             ntohs(udp->DstPort),
+                             ip_exclude_reason_name(exclude_reason));
+                continue;
+            }
 
             // Save session info BEFORE modifying packet
             UdpSession session{};

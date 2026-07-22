@@ -1,9 +1,42 @@
 #pragma once
 
 #include <cstdint>
+#include <vector>
 #include "config/types.hpp"
 
 namespace clew {
+
+enum class IpExcludeReason {
+    none,
+    global,
+    rule,
+};
+
+inline const char* ip_exclude_reason_name(IpExcludeReason reason) noexcept {
+    switch (reason) {
+    case IpExcludeReason::global: return "global_exclude";
+    case IpExcludeReason::rule:   return "rule_exclude";
+    default:                      return "none";
+    }
+}
+
+// Immutable-by-convention snapshot attached to new TCP/UDP connections.
+// Only CIDR excludes are represented here; include/port semantics remain
+// deliberately outside this policy until their forwarding behavior is wired.
+struct IpExcludePolicy {
+    std::vector<CidrRange> global_cidrs;
+    std::vector<CidrRange> rule_cidrs;
+
+    [[nodiscard]] IpExcludeReason evaluate(uint32_t dest_ip) const noexcept {
+        for (const auto& cidr : global_cidrs) {
+            if (cidr.matches(dest_ip)) return IpExcludeReason::global;
+        }
+        for (const auto& cidr : rule_cidrs) {
+            if (cidr.matches(dest_ip)) return IpExcludeReason::rule;
+        }
+        return IpExcludeReason::none;
+    }
+};
 
 // ============================================================
 // Traffic Filter Engine

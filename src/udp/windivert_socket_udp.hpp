@@ -202,6 +202,8 @@ private:
         te.remote_port = static_cast<uint16_t>(addr.Socket.RemotePort);
         te.group_id = entry.group_id;
         te.pid = pid;
+        te.exclude_policy = std::make_shared<const IpExcludePolicy>(
+            rules_.ip_exclude_policy(tree_, pid));
 
         tracker_.put(src_port, te);
         match_count_++;
