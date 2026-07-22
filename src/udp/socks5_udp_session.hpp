@@ -60,9 +60,11 @@ public:
                 return false;
             }
 
-            // Bind UDP socket to 127.0.0.1 (must declare real addr to proxy)
+            // Bind to all local interfaces so the OS can select the source
+            // address that can actually reach the relay. Binding to loopback
+            // makes remote SOCKS5 UDP relays unreachable on Windows.
             udp_data_.open(udp::v4());
-            udp_data_.bind(udp::endpoint(asio::ip::make_address("127.0.0.1"), 0));
+            udp_data_.bind(udp::endpoint(udp::v4(), 0));
             auto local_ep = udp_data_.local_endpoint();
 
             // UDP ASSOCIATE request with wildcard address (0.0.0.0:0)
@@ -135,15 +137,23 @@ public:
 
     asio::awaitable<bool> async_send_udp(std::vector<uint8_t> frame) {
         if (!alive_.load(std::memory_order_acquire)) co_return false;
-        auto local_port = udp_data_.local_endpoint().port();
+        asio::error_code local_ec;
+        auto local_ep = udp_data_.local_endpoint(local_ec);
         auto [ec, n] = co_await udp_data_.async_send_to(
             asio::buffer(frame), relay_endpoint_,
             asio::as_tuple(asio::use_awaitable));
         if (!ec) {
             last_active_ = std::chrono::steady_clock::now();
             PC_LOG_INFO("[SOCKS5-UDP] async_send {} bytes from local:{} -> {}:{}",
-                         n, local_port,
+                         n, local_ep.port(),
                          relay_endpoint_.address().to_string(), relay_endpoint_.port());
+        } else {
+            PC_LOG_WARN("[SOCKS5-UDP] async_send failed: code={} error='{}' "
+                        "local={}:{} relay={}:{} bytes={}",
+                        ec.value(), ec.message(),
+                        local_ep.address().to_string(), local_ep.port(),
+                        relay_endpoint_.address().to_string(), relay_endpoint_.port(),
+                        frame.size());
         }
         co_return !ec;
     }
@@ -170,7 +180,19 @@ public:
                             reinterpret_cast<const char*>(frame.data()),
                             static_cast<int>(frame.size()), 0,
                             reinterpret_cast<const sockaddr*>(&dest), sizeof(dest));
-        if (sent > 0) last_active_ = std::chrono::steady_clock::now();
+        if (sent > 0) {
+            last_active_ = std::chrono::steady_clock::now();
+        } else {
+            int error = WSAGetLastError();
+            asio::error_code local_ec;
+            auto local_ep = udp_data_.local_endpoint(local_ec);
+            PC_LOG_WARN("[SOCKS5-UDP] warmup send failed: code={} "
+                        "local={}:{} relay={}:{} bytes={}",
+                        error,
+                        local_ep.address().to_string(), local_ep.port(),
+                        relay_endpoint_.address().to_string(), relay_endpoint_.port(),
+                        frame.size());
+        }
         return sent > 0;
     }
 
@@ -179,6 +201,7 @@ public:
     bool is_alive() const { return alive_.load(std::memory_order_acquire); }
     auto last_active() const { return last_active_.load(); }
     const udp::endpoint& relay_endpoint() const { return relay_endpoint_; }
+    udp::endpoint local_udp_endpoint() const { return udp_data_.local_endpoint(); }
     auto native_udp_handle() { return udp_data_.native_handle(); }
 
     void close() {

@@ -25,7 +25,9 @@
 #include <vector>
 #include <cassert>
 #include <functional>
+#include <future>
 #include <sstream>
+#include <thread>
 
 #include "core/log.hpp"
 
@@ -36,6 +38,7 @@
 #include "rules/traffic_filter.hpp"
 #include "core/port_tracker.hpp"
 #include "udp/udp_port_tracker.hpp"
+#include "udp/socks5_udp_session.hpp"
 
 // ============================================================
 // Minimal test framework
@@ -72,6 +75,85 @@ static std::vector<std::string> g_errors;
 
 struct TestEntry { std::string name; std::function<void()> fn; };
 static std::vector<TestEntry> g_tests;
+
+// Minimal local SOCKS5 UDP ASSOCIATE peer. It performs one handshake and
+// captures one UDP datagram, keeping the component test independent of any
+// external proxy or network service.
+struct FakeSocks5UdpPeer {
+    explicit FakeSocks5UdpPeer(bool wildcard_reply)
+        : worker([this, wildcard_reply] { run(wildcard_reply); }) {}
+
+    ~FakeSocks5UdpPeer() {
+        if (worker.joinable()) worker.join();
+    }
+
+    uint16_t proxy_port() { return proxy_port_future.get(); }
+    std::vector<uint8_t> received() { return received_future.get(); }
+
+private:
+    std::promise<uint16_t> proxy_port_promise;
+    std::future<uint16_t> proxy_port_future = proxy_port_promise.get_future();
+    std::promise<std::vector<uint8_t>> received_promise;
+    std::future<std::vector<uint8_t>> received_future = received_promise.get_future();
+    std::thread worker;
+
+    void run(bool wildcard_reply) {
+        try {
+            asio::io_context ioc;
+            asio::ip::tcp::acceptor acceptor(
+                ioc, {asio::ip::address_v4::loopback(), 0});
+            asio::ip::udp::socket relay(
+                ioc, {asio::ip::address_v4::loopback(), 0});
+            proxy_port_promise.set_value(acceptor.local_endpoint().port());
+
+            asio::ip::tcp::socket control(ioc);
+            acceptor.accept(control);
+
+            std::array<uint8_t, 3> auth{};
+            asio::read(control, asio::buffer(auth));
+            const std::array<uint8_t, 2> auth_reply{0x05, 0x00};
+            asio::write(control, asio::buffer(auth_reply));
+
+            std::array<uint8_t, 10> associate{};
+            asio::read(control, asio::buffer(associate));
+
+            const auto relay_port = relay.local_endpoint().port();
+            const auto reply_addr = wildcard_reply
+                ? asio::ip::address_v4::any().to_bytes()
+                : asio::ip::address_v4::loopback().to_bytes();
+            std::array<uint8_t, 10> reply{
+                0x05, 0x00, 0x00, 0x01,
+                reply_addr[0], reply_addr[1], reply_addr[2], reply_addr[3],
+                static_cast<uint8_t>(relay_port >> 8),
+                static_cast<uint8_t>(relay_port & 0xff)};
+            asio::write(control, asio::buffer(reply));
+
+            std::array<uint8_t, 512> data{};
+            asio::ip::udp::endpoint sender;
+            auto n = relay.receive_from(asio::buffer(data), sender);
+            received_promise.set_value(
+                std::vector<uint8_t>(data.begin(), data.begin() + n));
+        } catch (...) {
+            try { proxy_port_promise.set_exception(std::current_exception()); }
+            catch (...) {}
+            try { received_promise.set_exception(std::current_exception()); }
+            catch (...) {}
+        }
+    }
+};
+
+static bool run_udp_send(asio::io_context& ioc,
+                         const std::shared_ptr<clew::Socks5UdpSession>& session,
+                         std::vector<uint8_t> frame) {
+    auto result = asio::co_spawn(
+        ioc, session->async_send_udp(std::move(frame)), asio::use_future);
+    std::thread io_thread([&ioc] { ioc.run(); });
+    bool sent = result.get();
+    session->close();
+    ioc.stop();
+    io_thread.join();
+    return sent;
+}
 
 // ============================================================
 // 1. wildcard_match tests
@@ -709,7 +791,72 @@ TEST(udp_tracker_policy_uses_network_order_destination) {
 }
 
 // ============================================================
-// 7. JSON round-trip tests
+// 7. SOCKS5 UDP session tests
+// ============================================================
+
+TEST(socks5_udp_binds_wildcard_and_sends_to_concrete_relay) {
+    FakeSocks5UdpPeer peer(false);
+    asio::io_context ioc;
+    auto session = std::make_shared<clew::Socks5UdpSession>(
+        ioc, "127.0.0.1", peer.proxy_port());
+
+    ASSERT_TRUE(session->establish());
+    ASSERT_TRUE(session->local_udp_endpoint().address().is_unspecified());
+    ASSERT_TRUE(session->relay_endpoint().address().is_loopback());
+
+    const std::vector<uint8_t> frame{0x05, 0x00, 0x01, 0x02, 0x03, 0x04};
+    ASSERT_TRUE(run_udp_send(ioc, session, frame));
+    ASSERT_EQ(peer.received(), frame);
+}
+
+TEST(socks5_udp_wildcard_relay_falls_back_to_proxy_host) {
+    FakeSocks5UdpPeer peer(true);
+    asio::io_context ioc;
+    auto session = std::make_shared<clew::Socks5UdpSession>(
+        ioc, "127.0.0.1", peer.proxy_port());
+
+    ASSERT_TRUE(session->establish());
+    ASSERT_TRUE(session->local_udp_endpoint().address().is_unspecified());
+    ASSERT_EQ(session->relay_endpoint().address().to_string(),
+              std::string("127.0.0.1"));
+
+    const std::vector<uint8_t> frame{0x11, 0x22, 0x33};
+    ASSERT_TRUE(run_udp_send(ioc, session, frame));
+    ASSERT_EQ(peer.received(), frame);
+}
+
+TEST(socks5_udp_control_loss_marks_session_dead_and_send_fails) {
+    FakeSocks5UdpPeer peer(false);
+    asio::io_context ioc;
+    auto session = std::make_shared<clew::Socks5UdpSession>(
+        ioc, "127.0.0.1", peer.proxy_port());
+    ASSERT_TRUE(session->establish());
+
+    auto work = asio::make_work_guard(ioc);
+    std::thread io_thread([&ioc] { ioc.run(); });
+    const std::vector<uint8_t> first{0xaa, 0xbb};
+    auto first_result = asio::co_spawn(
+        ioc, session->async_send_udp(first), asio::use_future);
+    ASSERT_TRUE(first_result.get());
+    ASSERT_EQ(peer.received(), first);
+
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (session->is_alive() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    ASSERT_FALSE(session->is_alive());
+
+    auto second_result = asio::co_spawn(
+        ioc, session->async_send_udp({0xcc}), asio::use_future);
+    ASSERT_FALSE(second_result.get());
+
+    session->close();
+    work.reset();
+    ioc.stop();
+    io_thread.join();
+}
+
+// ============================================================
+// 8. JSON round-trip tests
 // ============================================================
 
 using nlohmann::json;
