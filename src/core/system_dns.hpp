@@ -41,6 +41,7 @@ namespace clew::system_dns {
 struct InterfaceDnsState {
     std::string adapter_guid;          // GUID string like "{xxxx-xxxx-...}", stable across sessions
     std::string friendly_name;         // UTF-8, for logging only
+    bool automatic = true;             // true = DHCP/system-provided DNS
     std::vector<std::string> dns_servers;  // IPv4 dotted decimal
 };
 
@@ -58,6 +59,39 @@ inline std::string wide_to_utf8(const wchar_t* w) {
     std::string s(len - 1, '\0');
     WideCharToMultiByte(CP_UTF8, 0, w, -1, s.data(), len, nullptr, nullptr);
     return s;
+}
+
+inline bool explicit_nameserver_is_automatic(std::wstring_view value) noexcept {
+    return value.find_first_not_of(L" \t\r\n,;") == std::wstring_view::npos;
+}
+
+// The per-interface NameServer registry value records only explicitly
+// configured servers. GetInterfaceDnsSettings can return effective DHCP
+// servers on some Windows versions, so it cannot reliably identify the mode.
+inline std::optional<bool> interface_dns_is_automatic(const std::string& adapter_guid) {
+    std::wstring subkey =
+        L"SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters\\Interfaces\\";
+    subkey.append(adapter_guid.begin(), adapter_guid.end());
+
+    DWORD bytes = 0;
+    LSTATUS rc = RegGetValueW(HKEY_LOCAL_MACHINE, subkey.c_str(), L"NameServer",
+                              RRF_RT_REG_SZ, nullptr, nullptr, &bytes);
+    if (rc == ERROR_FILE_NOT_FOUND) return true;
+    if (rc != ERROR_SUCCESS) {
+        PC_LOG_WARN("[SYS-DNS] Read NameServer mode failed for {}: {}",
+                    adapter_guid, rc);
+        return std::nullopt;
+    }
+
+    std::vector<wchar_t> value(bytes / sizeof(wchar_t) + 1, L'\0');
+    rc = RegGetValueW(HKEY_LOCAL_MACHINE, subkey.c_str(), L"NameServer",
+                      RRF_RT_REG_SZ, nullptr, value.data(), &bytes);
+    if (rc != ERROR_SUCCESS) {
+        PC_LOG_WARN("[SYS-DNS] Read NameServer value failed for {}: {}",
+                    adapter_guid, rc);
+        return std::nullopt;
+    }
+    return explicit_nameserver_is_automatic(value.data());
 }
 
 // Enumerate active IPv4 interfaces (ethernet or wifi, up, with gateway).
@@ -92,6 +126,16 @@ inline std::vector<InterfaceDnsState> enumerate_active_interfaces() {
         if (a->AdapterName) st.adapter_guid = a->AdapterName;  // e.g. "{xxxx-xxxx-...}"
         st.friendly_name = wide_to_utf8(a->FriendlyName);
 
+        auto automatic = interface_dns_is_automatic(st.adapter_guid);
+        if (!automatic) {
+            // Do not modify an interface unless its original DNS mode can be
+            // restored exactly.
+            PC_LOG_WARN("[SYS-DNS] Skip interface {}: unable to capture DNS mode",
+                        st.adapter_guid);
+            continue;
+        }
+        st.automatic = *automatic;
+
         // Collect current DNS servers (IPv4 only)
         for (auto d = a->FirstDnsServerAddress; d; d = d->Next) {
             auto sa = d->Address.lpSockaddr;
@@ -107,6 +151,16 @@ inline std::vector<InterfaceDnsState> enumerate_active_interfaces() {
     return result;
 }
 
+inline std::wstring build_nameserver_value(
+    const std::vector<std::string>& dns_servers) {
+    std::wstring nameserver_w;
+    for (size_t i = 0; i < dns_servers.size(); ++i) {
+        if (i > 0) nameserver_w.push_back(L' ');
+        for (char c : dns_servers[i]) nameserver_w.push_back(static_cast<wchar_t>(c));
+    }
+    return nameserver_w;
+}
+
 // Set DNS servers for a single interface identified by its GUID string.
 // Empty dns_servers list = use DHCP (reset).
 inline bool set_interface_dns(const std::string& adapter_guid,
@@ -117,17 +171,15 @@ inline bool set_interface_dns(const std::string& adapter_guid,
         return false;
     }
 
-    // Build space-separated DNS string
-    std::wstring nameserver_w;
-    for (size_t i = 0; i < dns_servers.size(); ++i) {
-        if (i > 0) nameserver_w.push_back(L' ');
-        for (char c : dns_servers[i]) nameserver_w.push_back(static_cast<wchar_t>(c));
-    }
+    auto nameserver_w = build_nameserver_value(dns_servers);
 
     DNS_INTERFACE_SETTINGS settings = {};
     settings.Version = DNS_INTERFACE_SETTINGS_VERSION1;
     settings.Flags = DNS_SETTING_NAMESERVER;
-    settings.NameServer = nameserver_w.empty() ? nullptr : nameserver_w.data();
+    // DNS_SETTING_NAMESERVER requires a populated NameServer field.  An empty
+    // string resets the interface to its system/DHCP-provided DNS servers;
+    // nullptr is rejected with ERROR_INVALID_PARAMETER on Windows 10/11.
+    settings.NameServer = nameserver_w.data();
 
     DWORD rc = SetInterfaceDnsSettings(guid, &settings);
     if (rc != NO_ERROR) {
@@ -136,6 +188,14 @@ inline bool set_interface_dns(const std::string& adapter_guid,
         return false;
     }
     return true;
+}
+
+inline std::vector<std::string> dns_servers_for_restore(const InterfaceDnsState& state) {
+    return state.automatic ? std::vector<std::string>{} : state.dns_servers;
+}
+
+inline bool restore_interface_dns(const InterfaceDnsState& state) {
+    return set_interface_dns(state.adapter_guid, dns_servers_for_restore(state));
 }
 
 // Persist state to JSON file (write-then-rename for atomicity).
@@ -152,6 +212,7 @@ inline bool save_state(const std::filesystem::path& file,
             nlohmann::json item;
             item["adapter_guid"] = st.adapter_guid;
             item["friendly_name"] = st.friendly_name;
+            item["automatic"] = st.automatic;
             item["dns_servers"] = st.dns_servers;
             arr.push_back(item);
         }
@@ -189,6 +250,9 @@ load_state(const std::filesystem::path& file) {
             InterfaceDnsState st;
             st.adapter_guid = item.value("adapter_guid", std::string{});
             st.friendly_name = item.value("friendly_name", std::string{});
+            // Legacy state files did not record the mode. Preserve their old
+            // static-list restore behavior; new captures restore exactly.
+            st.automatic = item.value("automatic", false);
             st.dns_servers = item.value("dns_servers", std::vector<std::string>{});
             out.push_back(std::move(st));
         }

@@ -37,6 +37,7 @@
 #include "rules/rule_engine_v3.hpp"
 #include "rules/traffic_filter.hpp"
 #include "core/port_tracker.hpp"
+#include "core/system_dns.hpp"
 #include "udp/udp_port_tracker.hpp"
 #include "udp/socks5_udp_session.hpp"
 
@@ -895,6 +896,84 @@ TEST(json_autorule_defaults) {
     ASSERT_EQ(r.hack_tree, true);  // default in from_json
     ASSERT_EQ(r.protocol, std::string("tcp"));
     ASSERT_TRUE(r.image_path_pattern.empty());
+}
+
+TEST(system_dns_restore_mode_selects_automatic_or_manual) {
+    clew::system_dns::InterfaceDnsState automatic;
+    automatic.automatic = true;
+    automatic.dns_servers = {"192.0.2.53"};  // effective DHCP value
+    ASSERT_TRUE(clew::system_dns::dns_servers_for_restore(automatic).empty());
+
+    clew::system_dns::InterfaceDnsState manual;
+    manual.automatic = false;
+    manual.dns_servers = {"198.51.100.53", "203.0.113.53"};
+    ASSERT_EQ(clew::system_dns::dns_servers_for_restore(manual), manual.dns_servers);
+}
+
+TEST(system_dns_explicit_nameserver_detects_configuration_mode) {
+    using clew::system_dns::explicit_nameserver_is_automatic;
+    ASSERT_TRUE(explicit_nameserver_is_automatic(L""));
+    ASSERT_TRUE(explicit_nameserver_is_automatic(L"  \t,;\r\n"));
+    ASSERT_FALSE(explicit_nameserver_is_automatic(L"198.51.100.53"));
+    ASSERT_FALSE(explicit_nameserver_is_automatic(L"198.51.100.53,203.0.113.53"));
+}
+
+TEST(system_dns_nameserver_value_supports_reset_and_manual_servers) {
+    using clew::system_dns::build_nameserver_value;
+
+    const auto automatic = build_nameserver_value({});
+    ASSERT_TRUE(automatic.empty());
+    ASSERT_TRUE(automatic.data() != nullptr);
+    ASSERT_EQ(automatic.data()[0], L'\0');
+
+    ASSERT_EQ(build_nameserver_value({"198.51.100.53"}),
+              std::wstring(L"198.51.100.53"));
+    ASSERT_EQ(build_nameserver_value({"198.51.100.53", "203.0.113.53"}),
+              std::wstring(L"198.51.100.53 203.0.113.53"));
+}
+
+TEST(system_dns_state_roundtrip_preserves_mode) {
+    auto path = std::filesystem::temp_directory_path() /
+                "clew-system-dns-state-roundtrip.json";
+    clew::system_dns::delete_state(path);
+
+    clew::system_dns::InterfaceDnsState automatic;
+    automatic.adapter_guid = "{00000000-0000-0000-0000-000000000001}";
+    automatic.friendly_name = "adapter-a";
+    automatic.automatic = true;
+    automatic.dns_servers = {"192.0.2.53"};
+
+    clew::system_dns::InterfaceDnsState manual;
+    manual.adapter_guid = "{00000000-0000-0000-0000-000000000002}";
+    manual.friendly_name = "adapter-b";
+    manual.automatic = false;
+    manual.dns_servers = {"198.51.100.53", "203.0.113.53"};
+
+    ASSERT_TRUE(clew::system_dns::save_state(path, {automatic, manual}));
+    auto loaded = clew::system_dns::load_state(path);
+    ASSERT_TRUE(loaded.has_value());
+    ASSERT_EQ(loaded->size(), size_t{2});
+    ASSERT_TRUE((*loaded)[0].automatic);
+    ASSERT_EQ((*loaded)[0].dns_servers, automatic.dns_servers);
+    ASSERT_FALSE((*loaded)[1].automatic);
+    ASSERT_EQ((*loaded)[1].dns_servers, manual.dns_servers);
+    clew::system_dns::delete_state(path);
+}
+
+TEST(system_dns_legacy_state_defaults_to_manual_restore) {
+    auto path = std::filesystem::temp_directory_path() /
+                "clew-system-dns-state-legacy.json";
+    {
+        std::ofstream out(path);
+        out << R"({"interfaces":[{"adapter_guid":"legacy","friendly_name":"adapter-legacy","dns_servers":["203.0.113.53"]}]})";
+    }
+    auto loaded = clew::system_dns::load_state(path);
+    ASSERT_TRUE(loaded.has_value());
+    ASSERT_EQ(loaded->size(), size_t{1});
+    ASSERT_FALSE((*loaded)[0].automatic);
+    ASSERT_EQ(clew::system_dns::dns_servers_for_restore((*loaded)[0]),
+              std::vector<std::string>{"203.0.113.53"});
+    clew::system_dns::delete_state(path);
 }
 
 // ============================================================

@@ -49,9 +49,10 @@ public:
         if (!states) return;
         PC_LOG_INFO("[DNS-MGR] Found dns_state.json from previous session, restoring...");
         for (const auto& st : *states) {
-            if (system_dns::set_interface_dns(st.adapter_guid, st.dns_servers)) {
-                PC_LOG_INFO("[DNS-MGR] Restored DNS for {}: {} servers",
-                             st.friendly_name, st.dns_servers.size());
+            if (system_dns::restore_interface_dns(st)) {
+                PC_LOG_INFO("[DNS-MGR] Restored DNS for {}: mode={} servers={}",
+                             st.friendly_name, st.automatic ? "automatic" : "manual",
+                             st.dns_servers.size());
             }
         }
         system_dns::delete_state(state_file_);
@@ -194,9 +195,10 @@ private:
 
     void restore_system_dns() {
         for (const auto& st : saved_states_) {
-            if (system_dns::set_interface_dns(st.adapter_guid, st.dns_servers)) {
-                PC_LOG_INFO("[DNS-MGR] Restored DNS on {}: {} servers",
-                             st.friendly_name, st.dns_servers.size());
+            if (system_dns::restore_interface_dns(st)) {
+                PC_LOG_INFO("[DNS-MGR] Restored DNS on {}: mode={} servers={}",
+                             st.friendly_name, st.automatic ? "automatic" : "manual",
+                             st.dns_servers.size());
             }
         }
         system_dns::delete_state(state_file_);
