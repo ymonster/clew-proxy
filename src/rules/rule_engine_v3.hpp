@@ -333,6 +333,63 @@ public:
         return false;
     }
 
+    void set_default_exclude_cidrs(const std::vector<std::string>& cidrs) {
+        default_exclude_cidrs_.clear();
+        default_exclude_cidrs_.reserve(cidrs.size());
+        for (const auto& cidr : cidrs) {
+            default_exclude_cidrs_.push_back(CidrRange::parse(cidr));
+        }
+    }
+
+    // Capture the destination-IP exclusion policy for a proxied process.
+    // Manual hijacks receive global excludes only. Auto rules use the same
+    // first-match ordering as get_match_info().
+    [[nodiscard]] IpExcludePolicy ip_exclude_policy(const flat_tree& tree, DWORD pid) const {
+        IpExcludePolicy policy;
+        policy.global_cidrs = default_exclude_cidrs_;
+
+        uint32_t idx = tree.find_by_pid(pid);
+        if (idx == INVALID_IDX) return policy;
+        const auto& entry = tree.at(idx);
+        if (!entry.alive || !entry.is_proxied() ||
+            entry.has_flag(entry_flags::MANUAL_HIJACK)) {
+            return policy;
+        }
+
+        for (const auto& rule : auto_rules_) {
+            if (rule.matched_pids.contains(pid)) {
+                policy.rule_cidrs = rule.dst_filter.exclude_cidrs;
+                break;
+            }
+        }
+        return policy;
+    }
+
+    [[nodiscard]] IpExcludeReason ip_exclude_reason(const flat_tree& tree,
+                                                     DWORD pid,
+                                                     uint32_t dest_ip) const {
+        for (const auto& cidr : default_exclude_cidrs_) {
+            if (cidr.matches(dest_ip)) return IpExcludeReason::global;
+        }
+
+        uint32_t idx = tree.find_by_pid(pid);
+        if (idx == INVALID_IDX) return IpExcludeReason::none;
+        const auto& entry = tree.at(idx);
+        if (!entry.alive || !entry.is_proxied() ||
+            entry.has_flag(entry_flags::MANUAL_HIJACK)) {
+            return IpExcludeReason::none;
+        }
+
+        for (const auto& rule : auto_rules_) {
+            if (!rule.matched_pids.contains(pid)) continue;
+            for (const auto& cidr : rule.dst_filter.exclude_cidrs) {
+                if (cidr.matches(dest_ip)) return IpExcludeReason::rule;
+            }
+            break;
+        }
+        return IpExcludeReason::none;
+    }
+
     std::optional<RuleMatchResult> get_match_info(const flat_tree& tree, DWORD pid) const {
         uint32_t idx = tree.find_by_pid(pid);
         if (idx == INVALID_IDX) return std::nullopt;
@@ -363,6 +420,7 @@ public:
 
 private:
     std::vector<AutoRule> auto_rules_;
+    std::vector<CidrRange> default_exclude_cidrs_;
     bool any_rule_uses_cmdline_ = false;
 
     void refresh_cmdline_flag() {

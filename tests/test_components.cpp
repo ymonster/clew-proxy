@@ -35,6 +35,7 @@
 #include "rules/rule_engine_v3.hpp"
 #include "rules/traffic_filter.hpp"
 #include "core/port_tracker.hpp"
+#include "udp/udp_port_tracker.hpp"
 
 // ============================================================
 // Minimal test framework
@@ -583,6 +584,11 @@ using clew::TrafficFilter;
 using clew::TrafficFilterEngine;
 using clew::CidrRange;
 using clew::PortRange;
+using clew::IpExcludePolicy;
+using clew::IpExcludeReason;
+using clew::UdpTrackerEntry;
+using clew::UdpPortTracker;
+using clew::udp_ip_exclude_reason;
 
 TEST(filter_empty_allows_all) {
     TrafficFilter f;
@@ -611,6 +617,95 @@ TEST(filter_exclude_port) {
     f.exclude_ports = {PortRange::parse("22")};
     ASSERT_FALSE(TrafficFilterEngine::should_proxy("8.8.8.8", 22, f));
     ASSERT_TRUE(TrafficFilterEngine::should_proxy("8.8.8.8", 443, f));
+}
+
+TEST(ip_exclude_policy_global_precedes_rule) {
+    IpExcludePolicy policy;
+    policy.global_cidrs = {CidrRange::parse("192.0.2.0/24")};
+    policy.rule_cidrs = {CidrRange::parse("192.0.2.0/25")};
+    ASSERT_EQ(policy.evaluate(CidrRange::ip_to_uint("192.0.2.13")),
+              IpExcludeReason::global);
+    ASSERT_EQ(policy.evaluate(CidrRange::ip_to_uint("198.51.100.1")),
+              IpExcludeReason::none);
+}
+
+TEST(ip_exclude_policy_empty_excludes_nothing) {
+    IpExcludePolicy policy;
+    ASSERT_EQ(policy.evaluate(CidrRange::ip_to_uint("192.0.2.1")),
+              IpExcludeReason::none);
+    ASSERT_EQ(policy.evaluate(CidrRange::ip_to_uint("203.0.113.1")),
+              IpExcludeReason::none);
+}
+
+TEST(rule_engine_process_ip_exclude_is_scoped) {
+    flat_tree tree;
+    FILETIME ft = {};
+    add_test_entry(tree, 4, 0, ft, L"System");
+    add_test_entry(tree, 100, 4, ft, L"edge.exe");
+    add_test_entry(tree, 200, 4, ft, L"chrome.exe");
+
+    auto edge = make_rule("edge", "edge.exe");
+    edge.dst_filter.exclude_cidrs = {CidrRange::parse("198.51.100.0/24")};
+    auto chrome = make_rule("chrome", "chrome.exe");
+
+    rule_engine_v3 engine;
+    engine.set_auto_rules({edge, chrome});
+    engine.apply_auto_rules(tree);
+
+    auto ip = CidrRange::ip_to_uint("198.51.100.13");
+    ASSERT_EQ(engine.ip_exclude_reason(tree, 100, ip), IpExcludeReason::rule);
+    ASSERT_EQ(engine.ip_exclude_reason(tree, 200, ip), IpExcludeReason::none);
+}
+
+TEST(rule_engine_global_exclude_covers_manual_hijack) {
+    flat_tree tree;
+    FILETIME ft = {};
+    add_test_entry(tree, 4, 0, ft, L"System");
+    add_test_entry(tree, 100, 4, ft, L"manual.exe");
+
+    rule_engine_v3 engine;
+    engine.set_default_exclude_cidrs({"192.0.2.0/24"});
+    engine.manual_hijack(tree, 100, 0);
+
+    ASSERT_EQ(engine.ip_exclude_reason(tree, 100, CidrRange::ip_to_uint("192.0.2.3")),
+              IpExcludeReason::global);
+    ASSERT_EQ(engine.ip_exclude_reason(tree, 100, CidrRange::ip_to_uint("198.51.100.3")),
+              IpExcludeReason::none);
+}
+
+TEST(rule_engine_hack_tree_inherits_ip_exclude) {
+    flat_tree tree;
+    FILETIME ft = {};
+    add_test_entry(tree, 4, 0, ft, L"System");
+    add_test_entry(tree, 100, 4, ft, L"edge.exe");
+    add_test_entry(tree, 101, 100, ft, L"renderer.exe");
+
+    auto edge = make_rule("edge", "edge.exe", true);
+    edge.dst_filter.exclude_cidrs = {CidrRange::parse("203.0.113.0/24")};
+    rule_engine_v3 engine;
+    engine.set_auto_rules({edge});
+    engine.apply_auto_rules(tree);
+
+    ASSERT_EQ(engine.ip_exclude_reason(tree, 101, CidrRange::ip_to_uint("203.0.113.2")),
+              IpExcludeReason::rule);
+}
+
+TEST(udp_tracker_policy_uses_network_order_destination) {
+    auto tracker = std::make_unique<UdpPortTracker>();
+    UdpTrackerEntry entry;
+    auto policy = std::make_shared<IpExcludePolicy>();
+    policy->global_cidrs = {CidrRange::parse("192.0.2.0/24")};
+    entry.exclude_policy = policy;
+    tracker->put(5353, entry);
+
+    auto tracked = tracker->get(5353);
+    ASSERT_TRUE(tracked.has_value());
+    ASSERT_TRUE(tracked->exclude_policy != nullptr);
+
+    const auto host_ip = CidrRange::ip_to_uint("192.0.2.4");
+    ASSERT_EQ(udp_ip_exclude_reason(*tracked, htonl(host_ip)), IpExcludeReason::global);
+    ASSERT_EQ(udp_ip_exclude_reason(*tracked, htonl(CidrRange::ip_to_uint("198.51.100.4"))),
+              IpExcludeReason::none);
 }
 
 // ============================================================

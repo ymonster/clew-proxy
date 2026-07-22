@@ -19,6 +19,9 @@
 #include <optional>
 #include <cstdint>
 #include <cstring>
+#include <memory>
+
+#include "rules/traffic_filter.hpp"
 
 namespace clew {
 
@@ -27,7 +30,14 @@ struct UdpTrackerEntry {
     uint16_t remote_port{0};    // host byte order
     uint32_t group_id{0};
     uint32_t pid{0};            // needed for SOCKS5 session routing
+    std::shared_ptr<const IpExcludePolicy> exclude_policy;
 };
+
+inline IpExcludeReason udp_ip_exclude_reason(const UdpTrackerEntry& entry,
+                                              uint32_t network_order_dest_ip) noexcept {
+    if (!entry.exclude_policy) return IpExcludeReason::none;
+    return entry.exclude_policy->evaluate(ntohl(network_order_dest_ip));
+}
 
 struct alignas(64) UdpTrackerSlot {
     std::atomic<bool> active{false};

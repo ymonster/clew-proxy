@@ -30,6 +30,7 @@
 
 #include "process/flat_tree.hpp"
 #include "core/port_tracker.hpp"
+#include "rules/rule_engine_v3.hpp"
 
 namespace clew {
 
@@ -38,10 +39,12 @@ public:
     windivert_socket(asio::io_context& ioc,
                      asio::strand<asio::io_context::executor_type>& strand,
                      flat_tree& tree,
+                     rule_engine_v3& rules,
                      PortTracker& tracker)
         : ioc_(ioc)
         , strand_(strand)
         , tree_(tree)
+        , rules_(rules)
         , tracker_(tracker)
     {}
 
@@ -110,6 +113,7 @@ private:
     asio::io_context& ioc_;
     asio::strand<asio::io_context::executor_type>& strand_;
     flat_tree& tree_;
+    rule_engine_v3& rules_;
     PortTracker& tracker_;
 
     HANDLE handle_{INVALID_HANDLE_VALUE};
@@ -187,6 +191,16 @@ private:
 
         const auto& entry = tree_.at(idx);
         if (!entry.alive || !entry.is_proxied()) return;
+
+        const uint32_t dest_ip = addr.Socket.RemoteAddr[0];
+        const auto exclude_reason = rules_.ip_exclude_reason(tree_, pid, dest_ip);
+        if (exclude_reason != IpExcludeReason::none) {
+            PC_LOG_DEBUG("[WD-SOCKET] Direct PID={} port={} -> {}:{} reason={}",
+                         pid, src_port, CidrRange::uint_to_ip(dest_ip),
+                         static_cast<uint16_t>(addr.Socket.RemotePort),
+                         ip_exclude_reason_name(exclude_reason));
+            return;
+        }
 
         // Write to PortTracker (release semantics for NETWORK workers)
         TrackerEntry te{};
