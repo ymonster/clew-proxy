@@ -19,6 +19,8 @@
 #include <windows.h>
 
 #include <cstddef>
+#include <atomic>
+#include <filesystem>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -48,6 +50,33 @@
 static int g_pass = 0;
 static int g_fail = 0;
 static std::vector<std::string> g_errors;
+
+class ScopedTestDirectory {
+public:
+    explicit ScopedTestDirectory(std::string_view label) {
+        static std::atomic_uint64_t sequence{0};
+        path_ = std::filesystem::current_path() /
+                (".clew-test-" + std::string(label) + "-" +
+                 std::to_string(GetCurrentProcessId()) + "-" +
+                 std::to_string(sequence.fetch_add(1)));
+        std::filesystem::create_directory(path_);
+    }
+
+    ~ScopedTestDirectory() {
+        std::error_code ec;
+        std::filesystem::remove_all(path_, ec);
+    }
+
+    ScopedTestDirectory(const ScopedTestDirectory&) = delete;
+    ScopedTestDirectory& operator=(const ScopedTestDirectory&) = delete;
+
+    std::filesystem::path file(std::string_view name) const {
+        return path_ / name;
+    }
+
+private:
+    std::filesystem::path path_;
+};
 
 #define TEST(name) \
     static void test_##name(); \
@@ -933,9 +962,8 @@ TEST(system_dns_nameserver_value_supports_reset_and_manual_servers) {
 }
 
 TEST(system_dns_state_roundtrip_preserves_mode) {
-    auto path = std::filesystem::temp_directory_path() /
-                "clew-system-dns-state-roundtrip.json";
-    clew::system_dns::delete_state(path);
+    ScopedTestDirectory directory("system-dns-roundtrip");
+    const auto path = directory.file("state.json");
 
     clew::system_dns::InterfaceDnsState automatic;
     automatic.adapter_guid = "{00000000-0000-0000-0000-000000000001}";
@@ -957,12 +985,11 @@ TEST(system_dns_state_roundtrip_preserves_mode) {
     ASSERT_EQ((*loaded)[0].dns_servers, automatic.dns_servers);
     ASSERT_FALSE((*loaded)[1].automatic);
     ASSERT_EQ((*loaded)[1].dns_servers, manual.dns_servers);
-    clew::system_dns::delete_state(path);
 }
 
 TEST(system_dns_legacy_state_defaults_to_manual_restore) {
-    auto path = std::filesystem::temp_directory_path() /
-                "clew-system-dns-state-legacy.json";
+    ScopedTestDirectory directory("system-dns-legacy");
+    const auto path = directory.file("state.json");
     {
         std::ofstream out(path);
         out << R"({"interfaces":[{"adapter_guid":"legacy","friendly_name":"adapter-legacy","dns_servers":["203.0.113.53"]}]})";
@@ -973,7 +1000,6 @@ TEST(system_dns_legacy_state_defaults_to_manual_restore) {
     ASSERT_FALSE((*loaded)[0].automatic);
     ASSERT_EQ(clew::system_dns::dns_servers_for_restore((*loaded)[0]),
               std::vector<std::string>{"203.0.113.53"});
-    clew::system_dns::delete_state(path);
 }
 
 // ============================================================
