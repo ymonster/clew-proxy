@@ -47,7 +47,7 @@ app::app(const cli_options& opts, HINSTANCE hinstance)
     , projection_(tree_mgr_, strand_)
     , cfg_bridge_(cfg_store_)
     , config_svc_(cfg_store_)
-    , connection_svc_(exec_, udp_port_tracker_.get())
+    , connection_svc_(exec_, udp_port_tracker_.get(), &udp_session_table_)
     , group_svc_(exec_, cfg_store_)
     , icon_svc_(icons_)
     , process_svc_(exec_)
@@ -75,6 +75,7 @@ app::app(const cli_options& opts, HINSTANCE hinstance)
 
     tree_mgr_.rules().set_auto_rules(config_.get_v2().auto_rules);
     tree_mgr_.rules().set_default_exclude_cidrs(config_.get_v2().default_exclude_cidrs);
+    policy_pub_.publish(tree_mgr_.rules().build_policy_table());
     PC_LOG_INFO("Loaded {} auto rules", config_.get_v2().auto_rules.size());
 
     sync_groups();
@@ -89,7 +90,7 @@ app::app(const cli_options& opts, HINSTANCE hinstance)
     wd_socket_udp_  = std::make_unique<windivert_socket_udp>(ioc_, strand_, tree_mgr_.tree(),
                                                               tree_mgr_.rules(), *udp_port_tracker_);
     wd_network_udp_ = std::make_unique<windivert_network_udp>(*udp_port_tracker_, UDP_RELAY_PORT,
-                                                               udp_session_table_);
+                                                               udp_session_table_, policy_pub_);
 
     icons_.init();
 
@@ -156,10 +157,14 @@ void app::wire_observers() {
     cfg_store_.subscribe(
         [this](const ConfigV2& cfg, config_change /*tag*/) {
             try {
-                exec_.command([rules = cfg.auto_rules,
+                exec_.command([this, rules = cfg.auto_rules,
                                excludes = cfg.default_exclude_cidrs](domain::process_tree_manager& m) {
                     m.rules().set_default_exclude_cidrs(excludes);
                     m.apply_auto_rules_from_config(rules);
+                    // Republish the exclude policy the UDP workers read. Rebuilt
+                    // whole rather than patched: readers rely on the table being
+                    // immutable once published.
+                    policy_pub_.publish(m.rules().build_policy_table());
                 });
             } catch (const api_exception& e) {
                 PC_LOG_WARN("[config-sync] rule reload failed: {}", e.message());

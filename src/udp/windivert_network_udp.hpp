@@ -24,6 +24,7 @@
 #include <cstring>
 #include "core/log.hpp"
 
+#include "rules/policy_table.hpp"
 #include "udp/udp_port_tracker.hpp"
 #include "udp/udp_session_table.hpp"
 
@@ -32,10 +33,12 @@ namespace clew {
 class windivert_network_udp {
 public:
     windivert_network_udp(UdpPortTracker& tracker, uint16_t relay_port,
-                          UdpSessionTable& session_table)
+                          UdpSessionTable& session_table,
+                          const PolicyPublisher& policies)
         : tracker_(tracker)
         , relay_port_(relay_port)
         , session_table_(session_table)
+        , policies_(policies)
     {}
 
     ~windivert_network_udp() { close(); }
@@ -91,6 +94,7 @@ private:
     UdpPortTracker& tracker_;
     uint16_t relay_port_;
     UdpSessionTable& session_table_;
+    const PolicyPublisher& policies_;
 
     HANDLE handle_{INVALID_HANDLE_VALUE};
     bool closed_{false};
@@ -103,6 +107,10 @@ private:
     void worker_loop(std::stop_token st) {
         uint8_t pkt_buf[65535];
         WINDIVERT_ADDRESS addr;
+        // Per-worker view of the published policy table. The hot path below is
+        // one atomic generation load; the table itself is only swapped when the
+        // config actually changed.
+        PolicyReader policies(policies_);
 
         while (!st.stop_requested() && running_) {
             UINT pkt_len = sizeof(pkt_buf);
@@ -140,13 +148,14 @@ private:
 
             const auto& te = *tracked;
 
-            const auto exclude_reason = udp_ip_exclude_reason(te, ip->DstAddr);
+            const uint32_t dest_ip = ntohl(ip->DstAddr);
+            const auto exclude_reason = policies.evaluate(te.policy_id, dest_ip);
             if (exclude_reason != IpExcludeReason::none) {
                 WinDivertSend(handle_, pkt_buf, pkt_len, nullptr, &addr);
                 pass_count_.fetch_add(1, std::memory_order_relaxed);
                 PC_LOG_DEBUG("[WD-NET-UDP] Direct PID={} port={} -> {}:{} reason={}",
                              te.pid, src_port,
-                             CidrRange::uint_to_ip(ntohl(ip->DstAddr)),
+                             CidrRange::uint_to_ip(dest_ip),
                              ntohs(udp->DstPort),
                              ip_exclude_reason_name(exclude_reason));
                 continue;

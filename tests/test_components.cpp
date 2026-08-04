@@ -38,6 +38,7 @@
 #include "process/flat_tree.hpp"
 #include "rules/rule_engine_v3.hpp"
 #include "rules/traffic_filter.hpp"
+#include "rules/policy_table.hpp"
 #include "core/port_tracker.hpp"
 #include "core/system_dns.hpp"
 #include "udp/udp_port_tracker.hpp"
@@ -700,7 +701,10 @@ using clew::IpExcludePolicy;
 using clew::IpExcludeReason;
 using clew::UdpTrackerEntry;
 using clew::UdpPortTracker;
-using clew::udp_ip_exclude_reason;
+using clew::PolicyTable;
+using clew::PolicyPublisher;
+using clew::PolicyReader;
+using clew::GLOBAL_ONLY_POLICY;
 
 TEST(filter_empty_allows_all) {
     TrafficFilter f;
@@ -802,22 +806,125 @@ TEST(rule_engine_hack_tree_inherits_ip_exclude) {
               IpExcludeReason::rule);
 }
 
-TEST(udp_tracker_policy_uses_network_order_destination) {
+TEST(udp_tracker_entry_stays_trivially_copyable) {
+    // The slot array is published lock-free; a member with a non-trivial copy
+    // turns a torn read into heap corruption. Mirrors the static_asserts.
+    ASSERT_TRUE(std::is_trivially_copyable_v<UdpTrackerEntry>);
+    ASSERT_TRUE(std::is_trivially_copyable_v<TrackerEntry>);
+}
+
+TEST(udp_tracker_carries_policy_id_to_workers) {
     auto tracker = std::make_unique<UdpPortTracker>();
     UdpTrackerEntry entry;
-    auto policy = std::make_shared<IpExcludePolicy>();
-    policy->global_cidrs = {CidrRange::parse("192.0.2.0/24")};
-    entry.exclude_policy = policy;
+    entry.pid = 4242;
+    entry.policy_id = 7;
     tracker->put(5353, entry);
 
     auto tracked = tracker->get(5353);
     ASSERT_TRUE(tracked.has_value());
-    ASSERT_TRUE(tracked->exclude_policy != nullptr);
+    ASSERT_EQ(tracked->policy_id, 7u);
+    ASSERT_EQ(tracked->pid, 4242u);
 
-    const auto host_ip = CidrRange::ip_to_uint("192.0.2.4");
-    ASSERT_EQ(udp_ip_exclude_reason(*tracked, htonl(host_ip)), IpExcludeReason::global);
-    ASSERT_EQ(udp_ip_exclude_reason(*tracked, htonl(CidrRange::ip_to_uint("198.51.100.4"))),
+    tracker->clear(5353);
+    ASSERT_TRUE(!tracker->get(5353).has_value());
+    // clear() wipes the entry too, so a stale policy id can't be observed.
+    ASSERT_EQ(tracker->peek(5353).policy_id, GLOBAL_ONLY_POLICY);
+}
+
+TEST(policy_table_row_lookup_and_fallback) {
+    PolicyTable table;
+    table.rows.resize(3);
+    table.rows[GLOBAL_ONLY_POLICY].global_cidrs = {CidrRange::parse("192.0.2.0/24")};
+    table.rows[2].global_cidrs = {CidrRange::parse("192.0.2.0/24")};
+    table.rows[2].rule_cidrs   = {CidrRange::parse("198.51.100.0/24")};
+
+    const auto in_global = CidrRange::ip_to_uint("192.0.2.4");
+    const auto in_rule   = CidrRange::ip_to_uint("198.51.100.4");
+    const auto elsewhere = CidrRange::ip_to_uint("203.0.113.4");
+
+    ASSERT_EQ(table.evaluate(2, in_global), IpExcludeReason::global);
+    ASSERT_EQ(table.evaluate(2, in_rule), IpExcludeReason::rule);
+    ASSERT_EQ(table.evaluate(2, elsewhere), IpExcludeReason::none);
+
+    // Row 0 carries global excludes only.
+    ASSERT_EQ(table.evaluate(GLOBAL_ONLY_POLICY, in_rule), IpExcludeReason::none);
+    ASSERT_EQ(table.evaluate(GLOBAL_ONLY_POLICY, in_global), IpExcludeReason::global);
+
+    // A slot left over from a deleted rule falls back to row 0, never to some
+    // other rule's excludes.
+    ASSERT_EQ(table.evaluate(99, in_rule), IpExcludeReason::none);
+    ASSERT_EQ(table.evaluate(99, in_global), IpExcludeReason::global);
+}
+
+TEST(policy_reader_picks_up_published_table) {
+    PolicyPublisher publisher;
+    PolicyReader reader(publisher);
+
+    const auto ip = CidrRange::ip_to_uint("192.0.2.4");
+    ASSERT_EQ(reader.evaluate(GLOBAL_ONLY_POLICY, ip), IpExcludeReason::none);
+
+    auto table = std::make_shared<PolicyTable>();
+    table->rows.resize(1);
+    table->rows[GLOBAL_ONLY_POLICY].global_cidrs = {CidrRange::parse("192.0.2.0/24")};
+    publisher.publish(table);
+
+    ASSERT_EQ(reader.evaluate(GLOBAL_ONLY_POLICY, ip), IpExcludeReason::global);
+
+    // Republishing an empty policy is picked up as well.
+    auto cleared = std::make_shared<PolicyTable>();
+    cleared->rows.resize(1);
+    publisher.publish(cleared);
+    ASSERT_EQ(reader.evaluate(GLOBAL_ONLY_POLICY, ip), IpExcludeReason::none);
+}
+
+TEST(policy_id_survives_rule_add_and_remove) {
+    flat_tree tree;
+    FILETIME ft = {};
+    add_test_entry(tree, 4, 0, ft, L"System");
+    add_test_entry(tree, 100, 4, ft, L"edge.exe");
+
+    auto edge = make_rule("edge", "edge.exe");
+    edge.dst_filter.exclude_cidrs = {CidrRange::parse("198.51.100.0/24")};
+
+    rule_engine_v3 engine;
+    engine.set_auto_rules({edge});
+    engine.apply_auto_rules(tree);
+    const uint32_t id_before = engine.policy_id_for(tree, 100);
+    ASSERT_TRUE(id_before != GLOBAL_ONLY_POLICY);
+
+    // Insert another rule ahead of it: an index-based id would shift here.
+    auto other = make_rule("other", "other.exe");
+    engine.set_auto_rules({other, edge});
+    engine.apply_auto_rules(tree);
+    ASSERT_EQ(engine.policy_id_for(tree, 100), id_before);
+
+    // The published table must still carry edge's excludes under that id.
+    auto table = engine.build_policy_table();
+    ASSERT_EQ(table->evaluate(id_before, CidrRange::ip_to_uint("198.51.100.7")),
+              IpExcludeReason::rule);
+
+    // Drop the rule: the row degrades to global-only rather than aliasing.
+    engine.set_auto_rules({other});
+    engine.apply_auto_rules(tree);
+    auto after = engine.build_policy_table();
+    ASSERT_EQ(after->evaluate(id_before, CidrRange::ip_to_uint("198.51.100.7")),
               IpExcludeReason::none);
+}
+
+TEST(policy_table_manual_hijack_gets_global_row) {
+    flat_tree tree;
+    FILETIME ft = {};
+    add_test_entry(tree, 4, 0, ft, L"System");
+    add_test_entry(tree, 100, 4, ft, L"manual.exe");
+
+    rule_engine_v3 engine;
+    engine.set_default_exclude_cidrs({"192.0.2.0/24"});
+    engine.manual_hijack(tree, 100, 0);
+
+    ASSERT_EQ(engine.policy_id_for(tree, 100), GLOBAL_ONLY_POLICY);
+    auto table = engine.build_policy_table();
+    ASSERT_EQ(table->evaluate(GLOBAL_ONLY_POLICY, CidrRange::ip_to_uint("192.0.2.9")),
+              IpExcludeReason::global);
 }
 
 // ============================================================

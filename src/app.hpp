@@ -128,6 +128,10 @@ private:
 
     std::unique_ptr<UdpPortTracker>       udp_port_tracker_ = std::make_unique<UdpPortTracker>();
     UdpSessionTable                       udp_session_table_;
+    // Published from the strand, read by the UDP NETWORK workers. Lives here
+    // rather than inside the rule engine because the workers must read it
+    // without going through the strand.
+    PolicyPublisher                       policy_pub_;
     std::unique_ptr<windivert_socket_udp>  wd_socket_udp_;
     std::unique_ptr<windivert_network_udp> wd_network_udp_;
     Socks5UdpManager                       socks5_udp_mgr_;

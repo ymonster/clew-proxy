@@ -187,6 +187,7 @@ private:
 
         const DWORD pid = addr.Socket.ProcessId;
         const uint16_t src_port = static_cast<uint16_t>(addr.Socket.LocalPort);
+        const bool is_connect = (addr.Event == WINDIVERT_EVENT_SOCKET_CONNECT);
 
         // Check if this PID should be proxied for UDP protocol
         if (!rules_.should_proxy_protocol(tree_, pid, "udp")) return;
@@ -196,22 +197,39 @@ private:
         if (idx == INVALID_IDX) return;
         const auto& entry = tree_.at(idx);
 
+        if (is_connect) {
+            // A connected socket has one fixed destination, so the exclude
+            // decision can be made once here instead of on every packet. When
+            // it is excluded the slot goes away and the traffic never enters
+            // the reflect/relay path at all.
+            const uint32_t dest_ip = addr.Socket.RemoteAddr[0];
+            const auto reason = rules_.ip_exclude_reason(tree_, pid, dest_ip);
+            if (reason != IpExcludeReason::none) {
+                tracker_.clear(src_port);
+                PC_LOG_DEBUG("[WD-SOCKET-UDP] Direct PID={} port={} -> {}:{} reason={}",
+                              pid, src_port, CidrRange::uint_to_ip(dest_ip),
+                              static_cast<uint16_t>(addr.Socket.RemotePort),
+                              ip_exclude_reason_name(reason));
+                return;
+            }
+            // BIND already published this slot and CONNECT carries nothing new
+            // to store. Writing it again would overwrite an entry the NETWORK
+            // workers are likely already reading.
+            if (tracker_.is_active(src_port)) return;
+        }
+
         // Write to UdpPortTracker (release semantics for NETWORK workers)
         UdpTrackerEntry te{};
-        std::memcpy(te.remote_addr, addr.Socket.RemoteAddr, sizeof(te.remote_addr));
-        te.remote_port = static_cast<uint16_t>(addr.Socket.RemotePort);
         te.group_id = entry.group_id;
         te.pid = pid;
-        te.exclude_policy = std::make_shared<const IpExcludePolicy>(
-            rules_.ip_exclude_policy(tree_, pid));
+        te.policy_id = rules_.policy_id_for(tree_, pid);
 
         tracker_.put(src_port, te);
         match_count_++;
 
-        PC_LOG_DEBUG("[WD-SOCKET-UDP] Match PID={} port={} event={} group={}",
-                      pid, src_port,
-                      addr.Event == WINDIVERT_EVENT_SOCKET_BIND ? "BIND" : "CONNECT",
-                      te.group_id);
+        PC_LOG_DEBUG("[WD-SOCKET-UDP] Match PID={} port={} event={} group={} policy={}",
+                      pid, src_port, is_connect ? "CONNECT" : "BIND",
+                      te.group_id, te.policy_id);
     }
 };
 

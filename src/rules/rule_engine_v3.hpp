@@ -12,7 +12,9 @@
 #include <string>
 #include <string_view>
 #include <format>
+#include <memory>
 #include <vector>
+#include <unordered_map>
 #include <unordered_set>
 #include <optional>
 #include <algorithm>
@@ -21,6 +23,7 @@
 #include "process/flat_tree.hpp"
 #include "config/types.hpp"
 #include "rules/traffic_filter.hpp"
+#include "rules/policy_table.hpp"
 
 namespace clew {
 
@@ -127,6 +130,7 @@ public:
             // v0.9.0: hack_tree pinned true; field retained on disk for future
             // per-rule single-node mode but never honored at runtime.
             r.hack_tree = true;
+            assign_policy_id(r.id);
         }
         refresh_cmdline_flag();
     }
@@ -365,6 +369,43 @@ public:
         return policy;
     }
 
+    // Runtime policy id for a proxied process. Same first-match ordering as
+    // ip_exclude_policy(); manual hijacks and unmatched pids get row 0.
+    [[nodiscard]] uint32_t policy_id_for(const flat_tree& tree, DWORD pid) const {
+        uint32_t idx = tree.find_by_pid(pid);
+        if (idx == INVALID_IDX) return GLOBAL_ONLY_POLICY;
+        const auto& entry = tree.at(idx);
+        if (!entry.alive || !entry.is_proxied() ||
+            entry.has_flag(entry_flags::MANUAL_HIJACK)) {
+            return GLOBAL_ONLY_POLICY;
+        }
+
+        for (const auto& rule : auto_rules_) {
+            if (rule.matched_pids.contains(pid)) {
+                auto it = policy_ids_.find(rule.id);
+                return it == policy_ids_.end() ? GLOBAL_ONLY_POLICY : it->second;
+            }
+        }
+        return GLOBAL_ONLY_POLICY;
+    }
+
+    // Build the immutable table published to the NETWORK workers. Rows whose
+    // rule no longer exists stay at "global excludes only", so a socket that
+    // outlives its rule degrades to the global policy instead of picking up
+    // some other rule's excludes.
+    [[nodiscard]] std::shared_ptr<const PolicyTable> build_policy_table() const {
+        auto table = std::make_shared<PolicyTable>();
+        table->rows.assign(next_policy_id_, IpExcludePolicy{});
+        for (auto& row : table->rows) row.global_cidrs = default_exclude_cidrs_;
+
+        for (const auto& rule : auto_rules_) {
+            auto it = policy_ids_.find(rule.id);
+            if (it == policy_ids_.end()) continue;
+            table->rows[it->second].rule_cidrs = rule.dst_filter.exclude_cidrs;
+        }
+        return table;
+    }
+
     [[nodiscard]] IpExcludeReason ip_exclude_reason(const flat_tree& tree,
                                                      DWORD pid,
                                                      uint32_t dest_ip) const {
@@ -422,6 +463,21 @@ private:
     std::vector<AutoRule> auto_rules_;
     std::vector<CidrRange> default_exclude_cidrs_;
     bool any_rule_uses_cmdline_ = false;
+
+    // Rule id -> runtime policy id. Handed out from 1 (0 is reserved) and never
+    // reused: tracker slots hold the number, so recycling it would silently
+    // point a live socket at some other rule's excludes. An index into
+    // auto_rules_ would have the same problem — it shifts on add/remove.
+    // Monotonic within a session; tracker entries do not outlive the process.
+    std::unordered_map<std::string, uint32_t> policy_ids_;
+    uint32_t next_policy_id_ = 1;
+
+    void assign_policy_id(const std::string& rule_id) {
+        if (rule_id.empty()) return;
+        if (policy_ids_.try_emplace(rule_id, next_policy_id_).second) {
+            ++next_policy_id_;
+        }
+    }
 
     void refresh_cmdline_flag() {
         any_rule_uses_cmdline_ = std::any_of(auto_rules_.begin(), auto_rules_.end(),

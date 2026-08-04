@@ -17,6 +17,7 @@
 #include "rules/rule_engine_v3.hpp"
 #include "rules/traffic_filter.hpp"
 #include "udp/udp_port_tracker.hpp"
+#include "udp/udp_session_table.hpp"
 
 namespace clew {
 
@@ -73,23 +74,29 @@ nlohmann::json tcp_entry_to_json(const tcp_connection& conn,
 nlohmann::json udp_entry_to_json(const udp_endpoint& ep,
                                   const flat_tree& tree,
                                   const rule_engine_v3& rules,
-                                  const UdpPortTracker* tracker) {
+                                  const UdpPortTracker* tracker,
+                                  const UdpSessionTable* sessions) {
     nlohmann::json c;
     c["pid"]        = ep.pid;
     c["local_ip"]   = ep.local_ip;
     c["local_port"] = ep.local_port;
     c["state"]      = "BOUND";
 
+    // Destination comes from UdpSessionTable, which the NETWORK layer updates
+    // per packet. A UDP socket can sendto() many destinations, so this reports
+    // the one actually in use rather than a connect()-time address, and it also
+    // covers unconnected sockets. Empty until the port sends proxied traffic.
     std::string remote_ip;
     uint16_t    remote_port = 0;
-    if (tracker && tracker->is_active(ep.local_port)) {
-        const auto& entry = tracker->peek(ep.local_port);
-        struct in_addr addr;
-        addr.s_addr = htonl(entry.remote_addr[0]);
-        char buf[INET_ADDRSTRLEN];
-        inet_ntop(AF_INET, &addr, buf, sizeof(buf));
-        remote_ip   = buf;
-        remote_port = entry.remote_port;
+    if (sessions && tracker && tracker->is_active(ep.local_port)) {
+        if (auto session = sessions->lookup(ep.local_port)) {
+            struct in_addr addr;
+            addr.s_addr = session->orig_dst_addr;  // already network byte order
+            char buf[INET_ADDRSTRLEN];
+            inet_ntop(AF_INET, &addr, buf, sizeof(buf));
+            remote_ip   = buf;
+            remote_port = ntohs(session->orig_dst_port);
+        }
     }
     c["remote_ip"]   = remote_ip;
     c["remote_port"] = remote_port;
@@ -113,8 +120,9 @@ nlohmann::json udp_entry_to_json(const udp_endpoint& ep,
 
 } // namespace
 
-connection_service::connection_service(strand_bound_manager& exec, UdpPortTracker* udp_tracker)
-    : exec_(exec), udp_tracker_(udp_tracker) {}
+connection_service::connection_service(strand_bound_manager& exec, UdpPortTracker* udp_tracker,
+                                       const UdpSessionTable* udp_sessions)
+    : exec_(exec), udp_tracker_(udp_tracker), udp_sessions_(udp_sessions) {}
 
 nlohmann::json connection_service::list_tcp(std::optional<std::uint32_t> pid_filter) const {
     // NO_PID_FILTER (= UINT_MAX) is the "no filter, return all" sentinel.
@@ -144,16 +152,17 @@ nlohmann::json connection_service::list_tcp(std::optional<std::uint32_t> pid_fil
 nlohmann::json connection_service::list_udp(std::optional<std::uint32_t> pid_filter) const {
     DWORD filter_pid = pid_filter ? static_cast<DWORD>(*pid_filter) : NO_PID_FILTER;
     auto endpoints = udp_table::get_endpoints(filter_pid);
-    const UdpPortTracker* tracker = udp_tracker_;
+    const UdpPortTracker*  tracker  = udp_tracker_;
+    const UdpSessionTable* sessions = udp_sessions_;
 
-    return exec_.query([&endpoints, filter_pid, tracker](const domain::process_tree_manager& m) -> nlohmann::json {
+    return exec_.query([&endpoints, filter_pid, tracker, sessions](const domain::process_tree_manager& m) -> nlohmann::json {
         nlohmann::json arr = nlohmann::json::array();
         const auto& tree  = m.tree();
         const auto& rules = m.rules();
 
         for (const auto& ep : endpoints) {
             if (ep.local_port == 0 && filter_pid == NO_PID_FILTER) continue;
-            arr.push_back(udp_entry_to_json(ep, tree, rules, tracker));
+            arr.push_back(udp_entry_to_json(ep, tree, rules, tracker, sessions));
         }
         return arr;
     });

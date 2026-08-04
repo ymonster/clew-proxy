@@ -213,7 +213,7 @@ private:
 
         PC_LOG_DEBUG("[WD-SOCKET] Match PID={} port={} -> {}:{} group={}",
                       pid, src_port,
-                      (te.remote_addr[0] >> 0) & 0xFF,  // just first octet for debug
+                      CidrRange::uint_to_ip(te.remote_addr[0]),
                       te.remote_port, te.group_id);
     }
 };

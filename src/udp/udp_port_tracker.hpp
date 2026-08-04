@@ -19,25 +19,27 @@
 #include <optional>
 #include <cstdint>
 #include <cstring>
-#include <memory>
+#include <type_traits>
 
-#include "rules/traffic_filter.hpp"
+#include "rules/policy_table.hpp"
 
 namespace clew {
 
 struct UdpTrackerEntry {
-    uint32_t remote_addr[4]{};  // host byte order (WinDivert native); IPv4 in [0]
-    uint16_t remote_port{0};    // host byte order
     uint32_t group_id{0};
-    uint32_t pid{0};            // needed for SOCKS5 session routing
-    std::shared_ptr<const IpExcludePolicy> exclude_policy;
+    uint32_t pid{0};                              // needed for SOCKS5 session routing
+    uint32_t policy_id{GLOBAL_ONLY_POLICY};       // row in the published PolicyTable
 };
 
-inline IpExcludeReason udp_ip_exclude_reason(const UdpTrackerEntry& entry,
-                                              uint32_t network_order_dest_ip) noexcept {
-    if (!entry.exclude_policy) return IpExcludeReason::none;
-    return entry.exclude_policy->evaluate(ntohl(network_order_dest_ip));
-}
+// Slots are published lock-free: the writer fills the entry and then flips
+// `active` with release semantics, and there is nothing stopping the writer
+// from overwriting a slot a reader is still copying. That is only survivable
+// while a torn read costs at most one misrouted packet, which requires the
+// entry to be plain bytes. A member with a non-trivial copy (shared_ptr,
+// string, vector) turns the same race into heap corruption. Heap-owned policy
+// data belongs in the generation-versioned PolicyTable; keep an id here.
+static_assert(std::is_trivially_copyable_v<UdpTrackerEntry>,
+              "UdpTrackerEntry must stay trivially copyable — see the comment above");
 
 struct alignas(64) UdpTrackerSlot {
     std::atomic<bool> active{false};
@@ -73,7 +75,9 @@ public:
 
     // Clear entry (called when UDP socket closes or session expires)
     void clear(uint16_t port) {
-        slots_[port].active.store(false, std::memory_order_release);
+        auto& slot = slots_[port];
+        slot.active.store(false, std::memory_order_release);
+        slot.entry = UdpTrackerEntry{};
     }
 
 private:

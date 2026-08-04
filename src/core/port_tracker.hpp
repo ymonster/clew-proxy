@@ -21,6 +21,7 @@
 #include <optional>
 #include <cstdint>
 #include <cstring>
+#include <type_traits>
 
 namespace clew {
 
@@ -29,6 +30,15 @@ struct TrackerEntry {
     uint16_t remote_port{0};    // host byte order
     uint32_t group_id{0};
 };
+
+// Slots are published lock-free: the writer fills the entry and then flips
+// `active` with release semantics, and nothing stops the writer from
+// overwriting a slot a reader is still copying. That is only survivable while a
+// torn read costs at most one misrouted packet, which requires the entry to be
+// plain bytes. A member with a non-trivial copy (shared_ptr, string, vector)
+// turns the same race into heap corruption — keep heap-owned data out of here.
+static_assert(std::is_trivially_copyable_v<TrackerEntry>,
+              "TrackerEntry must stay trivially copyable — see the comment above");
 
 struct alignas(64) TrackerSlot {
     std::atomic<bool> active{false};

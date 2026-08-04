@@ -158,14 +158,32 @@ public:
         co_return !ec;
     }
 
+    // The data socket is bound to the wildcard address so it can reach a remote
+    // relay, which also means anything on the network can send to this port.
+    // Only the relay's own datagrams may be handed upstream — everything else is
+    // dropped here, before it reaches the SOCKS5 decoder and the hijacked app.
     asio::awaitable<std::pair<size_t, asio::error_code>>
     async_recv_udp(uint8_t* buf, size_t buf_len) {
-        udp::endpoint from;
-        auto [ec, n] = co_await udp_data_.async_receive_from(
-            asio::buffer(buf, buf_len), from,
-            asio::as_tuple(asio::use_awaitable));
-        if (!ec) last_active_ = std::chrono::steady_clock::now();
-        co_return std::pair{n, ec};
+        for (;;) {
+            udp::endpoint from;
+            auto [ec, n] = co_await udp_data_.async_receive_from(
+                asio::buffer(buf, buf_len), from,
+                asio::as_tuple(asio::use_awaitable));
+            if (ec) co_return std::pair{n, ec};
+
+            if (from != relay_endpoint_) {
+                auto dropped = ++foreign_drops_;
+                PC_LOG_DEBUG("[SOCKS5-UDP] Dropped {} bytes from {}:{} "
+                             "(expected relay {}:{}), total dropped={}",
+                             n, from.address().to_string(), from.port(),
+                             relay_endpoint_.address().to_string(),
+                             relay_endpoint_.port(), dropped);
+                continue;
+            }
+
+            last_active_ = std::chrono::steady_clock::now();
+            co_return std::pair{n, ec};
+        }
     }
 
     // ---- Warmup send (fire-and-forget, called from non-io thread via raw sendto) ----
@@ -223,6 +241,7 @@ private:
     std::atomic<bool> alive_{false};
     std::atomic<std::chrono::steady_clock::time_point> last_active_{
         std::chrono::steady_clock::now()};
+    uint64_t foreign_drops_{0};  // datagrams from someone other than the relay
 
 };
 
