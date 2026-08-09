@@ -435,7 +435,10 @@ onUnmounted(() => {
       </div>
 
       <!-- Configuration File Section -->
-      <div class="flex-1 min-h-0 flex flex-col" :class="{ 'max-w-xl': !editorOpen }">
+      <div
+        class="flex flex-col"
+        :class="editorOpen ? 'flex-1 min-h-[360px]' : 'max-w-xl shrink-0'"
+      >
         <div v-if="!editorOpen" class="rounded-lg border border-slate-200 dark:border-slate-800 overflow-hidden">
           <div class="flex items-center justify-between px-4 py-3 bg-white dark:bg-[#18181b]">
             <div>
