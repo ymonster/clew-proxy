@@ -87,6 +87,8 @@ src/
   rules/                         - auto-rule matching + traffic filtering
     rule_engine_v3.hpp               - flat_tree flag-based engine, no mutex
     traffic_filter.hpp               - CIDR / port destination filter
+    policy_table.hpp                 - immutable dst-exclude table, published on
+                                       config change; UDP workers read it lock-free
 
   proxy/                         - TCP relay
     acceptor.hpp                     - Asio TCP acceptor, spawns relay coroutines
@@ -330,6 +332,9 @@ The HTTP handler `process_handlers.cpp::handle_hijack` / `handle_unhijack` no lo
 - Same dual-layer architecture as TCP: `windivert_socket_udp` + `windivert_network_udp`
 - Each app-level UDP port gets its own SOCKS5 UDP ASSOCIATE session (RFC 1928)
 - Response routing via per-port session table — no cross-process bleed
+- `UdpTrackerEntry` is `{group_id, pid, policy_id}` — trivially copyable, `policy_id` indexes the published `PolicyTable`
+- Dst excludes: a `connect()`ed socket has one fixed destination, so the exclude is decided once on the strand at CONNECT (excluded → no tracker entry, direct). A bind-then-`sendto` socket (e.g. a DNS client) hits many destinations, so its packets are evaluated per-packet in the NETWORK worker via a `PolicyReader` (one generation compare per packet).
+- The SOCKS5 UDP data socket binds the wildcard address (to reach a remote relay), so downstream drops any datagram whose sender is not the relay endpoint.
 - See `src/udp/` for all UDP-specific files
 
 ### DNS proxy (optional, off by default)
