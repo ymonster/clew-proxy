@@ -19,6 +19,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include "core/exe_paths.hpp"
 #include "core/log.hpp"
 #include "transport/frontend_push_sink.hpp"
 
@@ -69,6 +70,11 @@ private:
     int  tray_retry_count_    = 0;
     static constexpr UINT_PTR TRAY_RETRY_TIMER_ID = 1;
     static constexpr int      TRAY_MAX_RETRIES    = 10;
+    // WebView2 init failure handling: one deferred retry from environment
+    // creation (per Microsoft guidance), then a single visible MessageBox.
+    static constexpr UINT_PTR WV_RETRY_TIMER_ID = 2;
+    int  wv_retry_count_      = 0;
+    bool wv_failure_notified_ = false;
     bool currently_visible_ = true;
     std::function<void()> on_ready_;
     // Fired whenever the host transitions WebView2 IsVisible. Wired in
@@ -81,12 +87,24 @@ private:
     Microsoft::WRL::ComPtr<ICoreWebView2> webview_;
 
     void initialize_webview() {
-        wchar_t exe_path[MAX_PATH];
-        GetModuleFileNameW(nullptr, exe_path, MAX_PATH);
-        std::wstring user_data_folder = exe_path;
-        size_t last_slash = user_data_folder.find_last_of(L"\\/");
-        if (last_slash != std::wstring::npos) {
-            user_data_folder = user_data_folder.substr(0, last_slash) + L"\\clew_webview_data";
+        // User data folder must NOT live next to the exe: under Program Files
+        // the WebView2 sandboxed child processes cannot use it and controller
+        // creation fails with 0x800700aa (issue #5; reproduced + verified
+        // 2026-08-31). %LOCALAPPDATA% is Microsoft's recommended location.
+        std::wstring user_data_folder;
+        if (auto lad = local_app_data_directory(); !lad.empty()) {
+            user_data_folder = (lad / L"clew" / L"webview_data").wstring();
+        } else {
+            // Pre-fix behavior as the fallback: exe-relative. Fine everywhere
+            // except Program Files, and %LOCALAPPDATA% resolution essentially
+            // never fails for an interactive user.
+            user_data_folder = exe_relative(L"clew_webview_data").wstring();
+        }
+        {
+            int len = WideCharToMultiByte(CP_UTF8, 0, user_data_folder.c_str(), -1, nullptr, 0, nullptr, nullptr);
+            std::string udf_utf8(len - 1, 0);
+            WideCharToMultiByte(CP_UTF8, 0, user_data_folder.c_str(), -1, udf_utf8.data(), len, nullptr, nullptr);
+            PC_LOG_INFO("WebView2 user data folder: {}", udf_utf8);
         }
 
         auto options = Microsoft::WRL::Make<CoreWebView2EnvironmentOptions>();
@@ -113,8 +131,7 @@ private:
             Microsoft::WRL::Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
                 [this](HRESULT result, ICoreWebView2Environment* env) -> HRESULT {
                     if (FAILED(result)) {
-                        PC_LOG_ERROR("Failed to create WebView2 environment: {:#x}", static_cast<unsigned int>(result));
-                        wv_state_ = wv_state::failed;
+                        on_webview_failure(result, "environment");
                         return result;
                     }
                     return env->CreateCoreWebView2Controller(
@@ -122,8 +139,7 @@ private:
                         Microsoft::WRL::Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
                             [this](HRESULT result, ICoreWebView2Controller* controller) -> HRESULT {
                                 if (FAILED(result) || !controller) {
-                                    PC_LOG_ERROR("Failed to create WebView2 controller: {:#x}", static_cast<unsigned int>(result));
-                                    wv_state_ = wv_state::failed;
+                                    on_webview_failure(result, "controller");
                                     return result;
                                 }
                                 webview_controller_ = controller;
@@ -221,6 +237,7 @@ private:
                                 }
                                 initialized_ = true;
                                 wv_state_ = wv_state::ready;
+                                wv_retry_count_ = 0;
                                 return S_OK;
                             }
                         ).Get()
@@ -230,8 +247,40 @@ private:
         );
 
         if (FAILED(hr)) {
-            PC_LOG_ERROR("CreateCoreWebView2EnvironmentWithOptions failed: {:#x}", static_cast<unsigned int>(hr));
-            wv_state_ = wv_state::failed;
+            on_webview_failure(hr, "environment (sync)");
+        }
+    }
+
+    // Every WebView2 init failure funnels through here (env callback,
+    // controller callback, synchronous env-creation HRESULT). UI thread only,
+    // like all wv_state_ writers. Microsoft's guidance: retry once starting
+    // from environment creation (a runtime update can invalidate the version
+    // an existing environment is bound to), except on ERROR_INVALID_STATE
+    // (user-data-folder/options mismatch — deterministic, retry can't help).
+    // The retry is deferred through a WM_TIMER so we never re-enter
+    // CreateCoreWebView2EnvironmentWithOptions from inside a completion
+    // callback.
+    void on_webview_failure(HRESULT hr, const char* stage) {
+        PC_LOG_ERROR("WebView2 init failed at {}: {:#x}", stage, static_cast<unsigned int>(hr));
+        wv_state_ = wv_state::failed;
+
+        if (hr != HRESULT_FROM_WIN32(ERROR_INVALID_STATE) && wv_retry_count_ == 0) {
+            ++wv_retry_count_;
+            PC_LOG_INFO("Retrying WebView2 init once from environment creation in 1s");
+            SetTimer(hwnd_, WV_RETRY_TIMER_ID, 1000, nullptr);
+            return;
+        }
+
+        if (!wv_failure_notified_) {
+            wv_failure_notified_ = true;
+            wchar_t msg[512];
+            swprintf_s(msg,
+                       L"Clew's window failed to initialize (WebView2 error 0x%08X).\n\n"
+                       L"The proxy engine is still running — the tray icon works, and you "
+                       L"can exit from there.\n\n"
+                       L"Details are in clew.log next to clew.exe.",
+                       static_cast<unsigned int>(hr));
+            MessageBoxW(hwnd_, msg, L"Clew", MB_OK | MB_ICONERROR);
         }
     }
 
@@ -576,6 +625,13 @@ private:
                 if (wparam == TRAY_RETRY_TIMER_ID) {
                     KillTimer(hwnd, TRAY_RETRY_TIMER_ID);
                     app->create_tray_icon();
+                    return 0;
+                }
+                if (wparam == WV_RETRY_TIMER_ID) {
+                    KillTimer(hwnd, WV_RETRY_TIMER_ID);
+                    // wv_state_ is `failed` here; this re-runs the full init
+                    // starting from environment creation.
+                    app->ensure_webview_initialized();
                     return 0;
                 }
                 break;

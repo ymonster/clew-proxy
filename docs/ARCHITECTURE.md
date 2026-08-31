@@ -456,6 +456,8 @@ Earlier versions resolved `clew.log`, `clew.json`, `dns_state.json`, and `fronte
 - **`dns_state.json`** — `dns_manager` constructor receives `exe_relative("dns_state.json")` from `app::app`.
 - **`frontend/dist`** — `http_api_server::setup_static_files` candidate list anchors to `get_executable_dir()` (release zip layout: `<exe>/frontend/dist`; dev build layout: `<exe>/../../frontend/dist`); cwd-relative candidates were removed.
 
+One deliberate exception (v0.9.6): the **WebView2 user data folder** — pure browser cache, not configuration — lives in `%LOCALAPPDATA%\clew\webview_data` (`exe_paths.hpp::local_app_data_directory`, falling back to the old exe-relative `clew_webview_data` only if `%LOCALAPPDATA%` cannot be resolved). It cannot be exe-relative: when the app is installed under `Program Files`, WebView2's sandboxed child processes cannot use a user data folder inside the install directory and controller creation fails with `0x800700aa` (issue #5, reproduced and variable-isolated 2026-08-31).
+
 The autostart Task Scheduler entry pins `--config <abs path>` explicitly so a system32-cwd launch still finds the user's config. `--minimized` is also part of the registered command line when "Start minimized to tray" is on.
 
 ## Build notes

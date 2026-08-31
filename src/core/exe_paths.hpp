@@ -11,9 +11,12 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <shlobj.h>
 
 #include <filesystem>
 #include <string>
+
+#include "scoped_exit.hpp"
 
 namespace clew {
 
@@ -43,6 +46,17 @@ namespace clew {
 
 [[nodiscard]] inline std::filesystem::path exe_relative(std::string_view name) {
     return exe_directory() / name;
+}
+
+// %LOCALAPPDATA% via the known-folder API (correct for non-ASCII user names,
+// independent of the environment block). Empty path on failure — callers are
+// expected to fall back to an exe-relative location.
+[[nodiscard]] inline std::filesystem::path local_app_data_directory() {
+    PWSTR raw = nullptr;
+    if (FAILED(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_DEFAULT, nullptr, &raw)))
+        return {};
+    scoped_exit free_raw{[&] { CoTaskMemFree(raw); }};
+    return std::filesystem::path{raw};
 }
 
 } // namespace clew
