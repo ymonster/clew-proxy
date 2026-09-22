@@ -39,6 +39,7 @@
 #include "projection/process_projection.hpp"
 #include "proxy/acceptor.hpp"
 #include "services/config_service.hpp"
+#include "services/core_service.hpp"
 #include "services/connection_service.hpp"
 #include "services/group_service.hpp"
 #include "services/icon_service.hpp"
@@ -153,6 +154,7 @@ private:
     process_tree_service process_svc_;
     rule_service         rule_svc_;
     stats_service        stats_svc_;
+    core_service         core_svc_;
 
     api_context ctx_;
 

@@ -28,12 +28,120 @@ import {
   deleteProxyGroup,
   migrateProxyGroup,
   testProxyGroup,
+  getSubscriptionCore,
+  updateSubscriptionCore,
+  refreshSubscriptionCore,
+  startSubscriptionCore,
+  stopSubscriptionCore,
 } from '@/api/client'
-import type { ProxyGroup, AutoRule, GroupInUseError, ProxyTestResult } from '@/api/types'
+import type { ProxyGroup, AutoRule, GroupInUseError, ProxyTestResult, SubscriptionCoreStatus } from '@/api/types'
 import { useStatusBus } from '@/composables/useStatusBus'
-import { Plus, Search, X, Pencil, Trash2, Globe, RefreshCw, Loader2, ChevronDown } from 'lucide-vue-next'
+import { Plus, Search, X, Pencil, Trash2, Globe, RefreshCw, Loader2, ChevronDown, Cable } from 'lucide-vue-next'
 
 const { pushError } = useStatusBus()
+
+// Embedded subscription / mihomo core
+const subStatus = ref<SubscriptionCoreStatus | null>(null)
+const subUrl = ref('')
+const subCorePath = ref('')
+const subPort = ref('17890')
+const subBusy = ref(false)
+
+async function fetchSubscription() {
+  try {
+    const s = await getSubscriptionCore()
+    subStatus.value = s
+    subUrl.value = s.url
+    subCorePath.value = s.core_path
+    subPort.value = String(s.socks_port || 17890)
+  } catch (e) {
+    console.error('[ProxiesTab] fetchSubscription failed:', e)
+  }
+}
+
+async function onToggleSubscription() {
+  if (subBusy.value || !subStatus.value) return
+  subBusy.value = true
+  try {
+    const next = !subStatus.value.enabled
+    subStatus.value = await updateSubscriptionCore({
+      enabled: next,
+      url: subUrl.value.trim(),
+      socks_port: Number.parseInt(subPort.value, 10) || 17890,
+      core_path: subCorePath.value.trim(),
+    })
+    await fetchData()
+  } catch (e) {
+    pushError(e, 'Update subscription core failed')
+  } finally {
+    subBusy.value = false
+  }
+}
+
+async function onSaveSubscriptionSettings() {
+  if (subBusy.value) return
+  subBusy.value = true
+  try {
+    subStatus.value = await updateSubscriptionCore({
+      url: subUrl.value.trim(),
+      socks_port: Number.parseInt(subPort.value, 10) || 17890,
+      core_path: subCorePath.value.trim(),
+      enabled: subStatus.value?.enabled ?? false,
+    })
+    await fetchData()
+  } catch (e) {
+    pushError(e, 'Save subscription settings failed')
+  } finally {
+    subBusy.value = false
+  }
+}
+
+async function onRefreshSubscription() {
+  if (subBusy.value) return
+  subBusy.value = true
+  try {
+    // Persist URL/port first so refresh uses the latest values.
+    await updateSubscriptionCore({
+      url: subUrl.value.trim(),
+      socks_port: Number.parseInt(subPort.value, 10) || 17890,
+      core_path: subCorePath.value.trim(),
+    })
+    subStatus.value = await refreshSubscriptionCore()
+    await fetchData()
+  } catch (e) {
+    pushError(e, 'Refresh subscription failed')
+    await fetchSubscription()
+  } finally {
+    subBusy.value = false
+  }
+}
+
+async function onStartSubscription() {
+  if (subBusy.value) return
+  subBusy.value = true
+  try {
+    subStatus.value = await startSubscriptionCore()
+    await fetchData()
+  } catch (e) {
+    pushError(e, 'Start core failed')
+  } finally {
+    subBusy.value = false
+  }
+}
+
+async function onStopSubscription() {
+  if (subBusy.value) return
+  subBusy.value = true
+  try {
+    subStatus.value = await stopSubscriptionCore()
+    await fetchData()
+  } catch (e) {
+    pushError(e, 'Stop core failed')
+  } finally {
+    subBusy.value = false
+  }
+}
+
 
 const groups = ref<ProxyGroup[]>([])
 const autoRules = ref<AutoRule[]>([])
@@ -188,7 +296,9 @@ function toggleExpand(id: number) {
   expandedGroupId.value = expandedGroupId.value === id ? null : id
 }
 
-onMounted(fetchData)
+onMounted(async () => {
+  await Promise.all([fetchData(), fetchSubscription()])
+})
 </script>
 
 <template>
@@ -228,6 +338,128 @@ onMounted(fetchData)
 
     <!-- Group cards -->
     <div class="flex-1 overflow-auto thin-scrollbar p-4 space-y-3">
+      <!-- Subscription / Embedded core -->
+      <Card class="border border-blue-200 dark:border-blue-900/50 bg-white dark:bg-[#18181b] shadow-sm">
+        <CardContent class="p-4 space-y-3">
+          <div class="flex items-center gap-2">
+            <Cable class="w-4 h-4 text-blue-600 dark:text-blue-400" />
+            <span class="text-base font-bold text-slate-800 dark:text-slate-100">Subscription / Embedded core</span>
+            <Badge
+              variant="outline"
+              class="h-5 px-2 text-[10px] font-bold uppercase"
+              :class="subStatus?.running
+                ? 'text-emerald-600 border-emerald-300 dark:text-emerald-400 dark:border-emerald-700'
+                : subStatus?.last_error
+                  ? 'text-red-600 border-red-300 dark:text-red-400 dark:border-red-700'
+                  : 'text-slate-500 border-slate-300 dark:text-slate-400 dark:border-slate-600'"
+            >
+              {{ subStatus?.running ? 'running' : (subStatus?.last_error ? 'error' : 'stopped') }}
+            </Badge>
+            <button
+              class="relative shrink-0 ml-auto inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500"
+              :class="subStatus?.enabled ? 'bg-blue-600' : 'bg-slate-300 dark:bg-slate-600'"
+              :disabled="subBusy"
+              title="Enable embedded core"
+              @click="onToggleSubscription"
+            >
+              <span
+                class="inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform"
+                :class="subStatus?.enabled ? 'translate-x-[18px]' : 'translate-x-0.5'"
+              />
+            </button>
+          </div>
+
+          <p class="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+            Place <code class="font-mono text-[11px] px-1 py-0.5 rounded bg-slate-100 dark:bg-slate-800">mihomo.exe</code>
+            (or <code class="font-mono text-[11px] px-1 py-0.5 rounded bg-slate-100 dark:bg-slate-800">clash-meta.exe</code>)
+            next to <code class="font-mono text-[11px] px-1 py-0.5 rounded bg-slate-100 dark:bg-slate-800">clew.exe</code>,
+            or set a custom path below. Clew starts the core as a child process listening on localhost SOCKS only
+            (no TUN / no system-wide hijack). Rules still decide which processes use the
+            <span class="font-medium text-slate-700 dark:text-slate-300">subscription</span> proxy group.
+          </p>
+
+          <div class="space-y-1">
+            <Label class="text-slate-700 dark:text-slate-200 text-xs">Subscription URL</Label>
+            <Input
+              v-model="subUrl"
+              placeholder="https://example.com/clash.yaml"
+              class="font-mono text-sm"
+              :disabled="subBusy"
+            />
+          </div>
+
+          <div class="flex gap-2">
+            <div class="w-28 space-y-1">
+              <Label class="text-slate-700 dark:text-slate-200 text-xs">SOCKS port</Label>
+              <Input v-model="subPort" placeholder="17890" class="font-mono text-sm" :disabled="subBusy" />
+            </div>
+            <div class="flex-1 space-y-1">
+              <Label class="text-slate-700 dark:text-slate-200 text-xs">Core path (optional)</Label>
+              <Input
+                v-model="subCorePath"
+                placeholder="auto: mihomo.exe beside clew.exe"
+                class="font-mono text-sm"
+                :disabled="subBusy"
+              />
+            </div>
+          </div>
+
+          <div class="flex flex-wrap items-center gap-2 pt-1">
+            <Button
+              size="sm"
+              variant="outline"
+              :disabled="subBusy"
+              class="h-8 text-xs"
+              @click="onSaveSubscriptionSettings"
+            >
+              Save
+            </Button>
+            <Button
+              size="sm"
+              :disabled="subBusy || !subUrl.trim()"
+              class="h-8 text-xs bg-blue-600 hover:bg-blue-700 text-white"
+              @click="onRefreshSubscription"
+            >
+              <RefreshCw class="w-3.5 h-3.5 mr-1" :class="subBusy ? 'animate-spin' : ''" />
+              Refresh
+            </Button>
+            <Button
+              v-if="!subStatus?.running"
+              size="sm"
+              variant="outline"
+              :disabled="subBusy"
+              class="h-8 text-xs"
+              @click="onStartSubscription"
+            >
+              Start
+            </Button>
+            <Button
+              v-else
+              size="sm"
+              variant="outline"
+              :disabled="subBusy"
+              class="h-8 text-xs text-red-600 border-red-300 hover:bg-red-50 dark:hover:bg-red-900/20"
+              @click="onStopSubscription"
+            >
+              Stop
+            </Button>
+            <span class="ml-auto text-xs font-mono text-slate-500 dark:text-slate-400">
+              socks5://{{ subStatus?.socks_host || '127.0.0.1' }}:{{ subStatus?.socks_port || subPort }}
+              <template v-if="subStatus?.pid"> · pid {{ subStatus.pid }}</template>
+            </span>
+          </div>
+
+          <div v-if="subStatus?.last_update || subStatus?.last_error || subStatus?.resolved_core_path"
+               class="text-[11px] space-y-0.5 text-slate-500 dark:text-slate-400 border-t border-slate-100 dark:border-slate-800 pt-2">
+            <p v-if="subStatus.resolved_core_path" class="font-mono truncate" :title="subStatus.resolved_core_path">
+              core: {{ subStatus.resolved_core_path }}
+            </p>
+            <p v-if="subStatus.last_update">last update: {{ subStatus.last_update }}</p>
+            <p v-if="subStatus.last_error" class="text-red-500 dark:text-red-400">{{ subStatus.last_error }}</p>
+          </div>
+        </CardContent>
+      </Card>
+
       <Card
         v-for="group in filteredGroups"
         :key="group.id"

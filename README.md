@@ -67,6 +67,18 @@ Proxies 标签页
 
 ![Proxy group](docs/images/proxy_group.png)
 
+### 1.1 订阅 / 内嵌核心（可选）
+
+不想再单独开 Clash 窗口、再把 SOCKS 端口粘到 Clew？可以在 **Proxies** 页的 **Subscription / Embedded core** 卡片里：
+
+1. 把 `mihomo.exe`（或 `clash-meta.exe` / `clash.exe`）放到与 `clew.exe` 同目录（或填写绝对路径）
+2. 填入 Clash / mihomo 格式的订阅 URL（正文需含 `proxies:`；也支持整份 YAML 的 Base64）
+3. 打开 Enable → 点 Refresh
+
+Clew 会拉取订阅、写出仅监听 `127.0.0.1` SOCKS 的最小配置（**不会开 TUN、不会系统级劫持**），拉起核心子进程，并自动维护一个名为 `subscription` 的 Proxy Group 指向该 SOCKS。之后仍用 **Rules** 决定哪些进程走代理——进程过滤始终是 Clew 的职责，内嵌核心只是替代「手开 Clash + 粘端口」。
+
+数据目录：`clew.exe` 旁的 `core_data/`（`config.yaml` + `subscription_provider.yaml`）。退出 Clew 时会结束子进程（Job Object）。
+
 ### 2. 添加 Auto Rule
 
 Rules 标签页

@@ -70,3 +70,6 @@ frontend/src/version.ts
 
 # Keep the icon even though *.ico could match a build artifact pattern elsewhere
 !assets/clew.ico
+
+# Embedded core runtime (subscription YAML + mihomo working dir)
+core_data/

@@ -53,6 +53,7 @@ app::app(const cli_options& opts, HINSTANCE hinstance)
     , process_svc_(exec_)
     , rule_svc_(exec_, cfg_store_)
     , stats_svc_(exec_, [this]() { return traffic_stats(); })
+    , core_svc_(cfg_store_)
     , ctx_{
         .config      = config_svc_,
         .connections = connection_svc_,
@@ -61,6 +62,7 @@ app::app(const cli_options& opts, HINSTANCE hinstance)
         .processes   = process_svc_,
         .rules       = rule_svc_,
         .stats       = stats_svc_,
+        .core        = core_svc_,
       }
     , api_server_(API_PORT, ctx_, opts_.static_dir)
 {
@@ -302,6 +304,9 @@ void app::start_servers_and_workers() {
     }
     PC_LOG_INFO("HTTP API: http://127.0.0.1:{}/", API_PORT);
 
+    // Embedded subscription core (best-effort; failure is shown in UI).
+    core_svc_.try_autostart();
+
     auto [ph, pp] = pick_proxy_endpoint();
     dns_mgr_.apply(config_.get_v2().dns, ph, pp);
 
@@ -391,6 +396,9 @@ void app::shutdown() noexcept {
 
     // DNS first — touches system-wide state visible to the user.
     dns_mgr_.stop();
+
+    // Stop embedded mihomo/Clash Meta before tearing down divert / API.
+    core_svc_.shutdown();
 
     socks5_udp_mgr_.stop();
     if (udp_relay_)      udp_relay_->stop();

@@ -286,6 +286,22 @@ struct TcpSynParkingConfig {
 
 NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(TcpSynParkingConfig, enabled, watchdog_ms, pool_size)
 
+// Embedded Clash Meta / mihomo core driven by a subscription URL.
+// Process-level routing stays in Clew (WinDivert + Rules); the core only
+// listens on localhost SOCKS. TUN is never enabled by Clew-generated config.
+struct SubscriptionCoreConfig {
+    bool enabled = false;
+    std::string url;                          // Subscription HTTP(S) URL
+    std::string socks_host = "127.0.0.1";
+    uint16_t socks_port = 17890;
+    std::string core_path;                    // Optional; empty = auto-discover beside clew.exe
+    std::string last_error;                   // Last fetch/start failure (persisted for UI)
+    std::string last_update;                  // ISO-8601 local time of last successful refresh
+    std::string group_name = "subscription";  // ProxyGroup name Clew keeps pointed at socks_host:port
+};
+
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(SubscriptionCoreConfig, enabled, url, socks_host, socks_port, core_path, last_error, last_update, group_name)
+
 struct ConfigV2 {
     int version = 2;
     ProxyTarget default_proxy;
@@ -304,8 +320,9 @@ struct ConfigV2 {
     std::string log_level = "info";             // Runtime log level: debug/info/warning/error
     DnsConfig dns;                              // NEW: DNS proxy configuration
     TcpSynParkingConfig tcp_syn_parking;        // SYN parking switch + tuning (startup only)
+    SubscriptionCoreConfig subscription;        // Embedded mihomo/Clash Meta core (optional)
 };
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ConfigV2, version, default_proxy, proxy_groups, next_group_id, default_exclude_cidrs, auto_rules, ui, io_threads, log_level, dns, tcp_syn_parking)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(ConfigV2, version, default_proxy, proxy_groups, next_group_id, default_exclude_cidrs, auto_rules, ui, io_threads, log_level, dns, tcp_syn_parking, subscription)
 
 } // namespace clew

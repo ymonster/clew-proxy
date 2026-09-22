@@ -87,3 +87,21 @@ export interface Stats {
   hijacked_pids: number
   auto_rules_count: number
 }
+
+export interface SubscriptionCoreStatus {
+  enabled: boolean
+  url: string
+  socks_host: string
+  socks_port: number
+  core_path: string
+  resolved_core_path: string
+  running: boolean
+  pid: number
+  last_error: string
+  last_update: string
+  group_name: string
+  group_id: number | null
+  data_dir: string
+  config_path: string
+}
+

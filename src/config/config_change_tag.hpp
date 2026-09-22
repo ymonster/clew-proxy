@@ -19,6 +19,7 @@ enum class config_change {
     group_deleted,
     group_migrated,
     wholesale_replaced,   // PUT /api/config full replacement
+    subscription_updated, // Embedded core settings / status fields
 };
 
 } // namespace clew

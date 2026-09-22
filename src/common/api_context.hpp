@@ -13,6 +13,7 @@ class icon_service;
 class process_tree_service;
 class rule_service;
 class stats_service;
+class core_service;
 
 // shell_service is intentionally NOT here — it has only static methods,
 // so handlers call clew::shell_service::method() directly.
@@ -29,6 +30,7 @@ struct api_context {
     process_tree_service& processes;
     rule_service&         rules;
     stats_service&        stats;
+    core_service&         core;
 };
 
 } // namespace clew

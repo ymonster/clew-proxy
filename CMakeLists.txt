@@ -107,6 +107,7 @@ set(CLEW_SOURCES
     src/services/rule_service.cpp
     src/services/shell_service.cpp
     src/services/stats_service.cpp
+    src/services/core_service.cpp
     src/projection/process_projection.cpp
     src/projection/config_sse_bridge.cpp
     src/transport/response_utils.cpp
@@ -122,6 +123,7 @@ set(CLEW_SOURCES
     src/transport/handlers/rule_handlers.cpp
     src/transport/handlers/shell_handlers.cpp
     src/transport/handlers/stats_handlers.cpp
+    src/transport/handlers/core_handlers.cpp
 )
 
 # Embed the Clew icon via a Win32 resource file.
@@ -159,6 +161,7 @@ endif()
 set(CLEW_LIBRARIES
     ws2_32
     iphlpapi
+    winhttp
     WinDivert
     quill::quill
     nlohmann_json::nlohmann_json

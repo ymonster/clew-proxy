@@ -1,4 +1,4 @@
-import type { AutoRule, ProcessInfo, Stats, TcpConnection, NetworkConnection, ProxyGroup, GroupInUseError, ProxyTestResult } from './types'
+import type { AutoRule, ProcessInfo, Stats, TcpConnection, NetworkConnection, ProxyGroup, GroupInUseError, ProxyTestResult, SubscriptionCoreStatus } from './types'
 
 const BASE = '/api'
 
@@ -232,3 +232,31 @@ export function setAutostart(state: AutostartState): Promise<AutostartState> {
     body: JSON.stringify(state),
   })
 }
+
+// -- Embedded subscription core (mihomo / Clash Meta) --
+
+export function getSubscriptionCore(): Promise<SubscriptionCoreStatus> {
+  return request<SubscriptionCoreStatus>('/subscription-core')
+}
+
+export function updateSubscriptionCore(
+  patch: Partial<Pick<SubscriptionCoreStatus, 'enabled' | 'url' | 'socks_host' | 'socks_port' | 'core_path' | 'group_name'>>,
+): Promise<SubscriptionCoreStatus> {
+  return request<SubscriptionCoreStatus>('/subscription-core', {
+    method: 'PUT',
+    body: JSON.stringify(patch),
+  })
+}
+
+export function refreshSubscriptionCore(): Promise<SubscriptionCoreStatus> {
+  return request<SubscriptionCoreStatus>('/subscription-core/refresh', { method: 'POST' })
+}
+
+export function startSubscriptionCore(): Promise<SubscriptionCoreStatus> {
+  return request<SubscriptionCoreStatus>('/subscription-core/start', { method: 'POST' })
+}
+
+export function stopSubscriptionCore(): Promise<SubscriptionCoreStatus> {
+  return request<SubscriptionCoreStatus>('/subscription-core/stop', { method: 'POST' })
+}
+
