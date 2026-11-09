@@ -107,6 +107,7 @@ src/
 frontend/                            - Vue 3 + TypeScript (built static files served by cpp-httplib)
 tests/
   test_components.cpp                - Component-level unit tests (wildcard, flat_tree, etc.)
+  test_relay.cpp                     - Local real-relay race regression + throughput/memory harness
   e2e_api_test.py                    - 22-case HTTP integration suite (requests-based); `-k SUBSTR` runs a subset
   run_all.py                         - admin-shell harness: launch + wait-ready + run + teardown
   playwright_e2e/
@@ -317,8 +318,9 @@ Counters (`GET /api/stats` → `tcp_syn_parking`, and a `[SYN-PARK]` INFO line e
 
 ### C++20 coroutine relay
 
-- `acceptor.hpp`: Asio TCP acceptor spawns `relay_session` coroutine per connection
-- `relay.hpp`: bidirectional async pipe using `asio::co_spawn` + `async_read_some` / `async_write`
+- `acceptor.hpp`: Asio TCP acceptor spawns `handle_connection` on a separate strand for each accepted connection
+- `relay.hpp`: bidirectional async pipe using `async_read_some` / `async_write`; `||` means any-completes-cancels-other
+- The per-connection strand serialises completion and cancellation handlers for that connection's two pipes. Network I/O remains overlapped, and unrelated connections still run concurrently across the worker pool. The shared application strand is used only for brief tracker/config operations, not relay traffic.
 - `socks5_async.hpp`: SOCKS5 handshake as a coroutine (no blocking threads)
 
 ### Rule priority
@@ -530,6 +532,13 @@ competes with V8 main-thread push processing under load):
   wait_us / hijack RTT). Optional `--visibility-cycle` to drive minimize
   / restore mid-test via `WM_SYSCOMMAND` and bucket pre / hidden / post
   metrics — useful for verifying the visibility gate.
+- `tests/test_relay.cpp` — real `async_acceptor` / `handle_connection` against
+  a local SOCKS5 peer, with no admin, WinDivert, or external network. The
+  default run stresses simultaneous two-direction teardown on multiple
+  workers. `--benchmark` adds single-/8-connection throughput, idle-connection
+  memory, and short-connection churn. Build and option details are in the
+  file header; `--iterations`, `--concurrency`, `--workers`, `--idle`, and
+  `--throughput-mib` control the load.
 
-Neither harness is part of `verify.sh` (they're for ad-hoc characterisation,
-not regression).
+These harnesses are not part of `verify.sh`; run `test_relay.cpp` explicitly
+for the relay race regression.

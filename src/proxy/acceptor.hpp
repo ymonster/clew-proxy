@@ -85,8 +85,9 @@ private:
 
             accepted_count_.fetch_add(1);
 
-            // Spawn relay coroutine for this connection
-            asio::co_spawn(ioc_,
+            // Serialise this connection's completion and cancellation handlers
+            // without serialising unrelated connections on the shared strand.
+            asio::co_spawn(asio::make_strand(ioc_),
                 handle_connection(std::move(sock), tracker_, strand_, groups_),
                 asio::detached);
         }
