@@ -49,9 +49,10 @@ private:
     int height_ = 800;
     int init_x_ = -1;  // -1 = center
     int init_y_ = -1;
+    int init_dpi_ = 0;
     std::wstring title_ = L"Clew";
     std::function<void()> on_close_;
-    std::function<void(int, int, int, int)> on_move_resize_;
+    std::function<void(int, int, int, int, int)> on_move_resize_;
     bool initialized_ = false;
     // Controller lifecycle, distinct from `initialized_` (= "navigated"). Drives
     // ensure_webview_initialized()'s idempotent (re)try. UI-thread only: every
@@ -534,11 +535,13 @@ private:
     LRESULT on_exitsizemove(HWND hwnd) {
         if (on_move_resize_) {
             RECT r;
-            GetWindowRect(hwnd, &r);
-            const UINT dpi = GetDpiForWindow(hwnd);
+            if (!GetWindowRect(hwnd, &r)) return 0;
+            const int dpi = static_cast<int>(GetDpiForWindow(hwnd));
+            if (dpi == 0) return 0;
             on_move_resize_(r.left, r.top,
                             MulDiv(r.right - r.left, USER_DEFAULT_SCREEN_DPI, dpi),
-                            MulDiv(r.bottom - r.top, USER_DEFAULT_SCREEN_DPI, dpi));
+                            MulDiv(r.bottom - r.top, USER_DEFAULT_SCREEN_DPI, dpi),
+                            dpi);
         }
         return 0;
     }
@@ -683,8 +686,14 @@ public:
 
     void set_title(std::wstring_view title) { title_ = title; }
     void set_on_close(std::function<void()> callback) { on_close_ = std::move(callback); }
-    void set_on_move_resize(std::function<void(int, int, int, int)> callback) { on_move_resize_ = std::move(callback); }
-    void set_initial_rect(int x, int y, int w, int h) { init_x_ = x; init_y_ = y; width_ = w; height_ = h; }
+    void set_on_move_resize(std::function<void(int, int, int, int, int)> callback) { on_move_resize_ = std::move(callback); }
+    void set_initial_rect(int x, int y, int w, int h, int dpi) {
+        init_x_ = x;
+        init_y_ = y;
+        width_ = w;
+        height_ = h;
+        init_dpi_ = dpi;
+    }
     void set_close_to_tray(bool v) { close_to_tray_ = v; }
     void set_devtools_enabled(bool v) { devtools_enabled_ = v; }
     // Skip the initial SW_SHOW and start hidden (tray-only). Used by the
@@ -758,10 +767,13 @@ public:
             y = (screen_height - height_) / 2;
         }
 
+        // Select the initial monitor using the saved window's physical size.
+        const int saved_dpi = has_saved_position && init_dpi_ > 0 ? init_dpi_ : USER_DEFAULT_SCREEN_DPI;
         hwnd_ = CreateWindowExW(
             0, L"ClewWebViewClass", title_.c_str(),
             WS_OVERLAPPEDWINDOW,
-            x, y, width_, height_,
+            x, y, MulDiv(width_, saved_dpi, USER_DEFAULT_SCREEN_DPI),
+            MulDiv(height_, saved_dpi, USER_DEFAULT_SCREEN_DPI),
             nullptr, nullptr, hinstance, this
         );
 
