@@ -124,9 +124,12 @@ set(CLEW_SOURCES
     src/transport/handlers/stats_handlers.cpp
 )
 
-# Embed the Clew icon via a Win32 resource file.
+# Embed the Clew icon and UTF-8 active code page manifest on Windows.
 if(WIN32)
-    list(APPEND CLEW_SOURCES ${CMAKE_SOURCE_DIR}/assets/clew.rc)
+    list(APPEND CLEW_SOURCES
+        ${CMAKE_SOURCE_DIR}/assets/clew.rc
+        ${CMAKE_SOURCE_DIR}/assets/utf8.manifest
+    )
 endif()
 
 # Executable
