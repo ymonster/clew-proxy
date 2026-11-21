@@ -244,11 +244,12 @@ struct UiConfig {
     int window_height = 800;
     int window_x = -1;      // -1 = center
     int window_y = -1;
+    int window_dpi = 0;     // DPI at the saved position, or 0 if unknown
     bool dark_mode = true;
     bool close_to_tray = false;
 };
 
-NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(UiConfig, window_width, window_height, window_x, window_y, dark_mode, close_to_tray)
+NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE_WITH_DEFAULT(UiConfig, window_width, window_height, window_x, window_y, window_dpi, dark_mode, close_to_tray)
 
 // ============================================================
 // Config V2 - Top-level configuration
