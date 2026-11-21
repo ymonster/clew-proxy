@@ -27,6 +27,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <utility>
@@ -69,7 +70,7 @@ struct ConnectedClient {
 
 class RelayFixture {
 public:
-    enum class Mode { abrupt_close, echo };
+    enum class Mode { abrupt_close, echo, client_eof, client_rst, proxy_eof, proxy_rst, handshake_eof };
 
     RelayFixture(size_t worker_count, Mode mode)
         : work_(asio::make_work_guard(ioc_))
@@ -152,6 +153,10 @@ public:
         ready_base_ = proxy_ready_.load(std::memory_order_acquire);
     }
 
+    void stop() {
+        shutdown();
+    }
+
 private:
     template <typename Predicate>
     bool wait_until(Predicate predicate, std::chrono::milliseconds timeout = 5s) {
@@ -190,6 +195,11 @@ private:
         auto [read_greeting_ec, greeting_size] = co_await asio::async_read(
             socket, asio::buffer(greeting), asio::as_tuple(asio::use_awaitable));
         if (read_greeting_ec) co_return false;
+        if (mode_ == Mode::handshake_eof) {
+            std::error_code ec;
+            socket.close(ec);
+            co_return false;
+        }
 
         const std::array<unsigned char, 2> greeting_reply{0x05, 0x00};
         auto [write_greeting_ec, greeting_reply_size] = co_await asio::async_write(
@@ -212,7 +222,7 @@ private:
         if (!co_await proxy_handshake(socket)) co_return;
         proxy_ready_.fetch_add(1, std::memory_order_release);
 
-        if (mode_ == Mode::abrupt_close) {
+        if (mode_ != Mode::echo) {
             unsigned char request = 0;
             auto [read_ec, read_size] = co_await socket.async_read_some(
                 asio::buffer(&request, 1), asio::as_tuple(asio::use_awaitable));
@@ -221,15 +231,25 @@ private:
                 socket, asio::buffer(&request, 1), asio::as_tuple(asio::use_awaitable));
             if (write_ec) co_return;
 
-            // Deliver the response with FIN before the client's RST. Closing
-            // with linger(0) here could discard the response and fail the test
-            // before either relay direction has observed the intended teardown.
+            if (mode_ == Mode::proxy_eof || mode_ == Mode::proxy_rst) {
+                unsigned char ack = 0;
+                auto [ack_ec, ack_size] = co_await socket.async_read_some(
+                    asio::buffer(&ack, 1), asio::as_tuple(asio::use_awaitable));
+                if (ack_ec) co_return;
+            }
+
             std::error_code ec;
-            socket.shutdown(tcp::socket::shutdown_send, ec);
-            unsigned char ignored = 0;
-            auto [close_ec, close_size] = co_await socket.async_read_some(
-                asio::buffer(&ignored, 1), asio::as_tuple(asio::use_awaitable));
-            socket.set_option(asio::socket_base::linger(true, 0), ec);
+            if (mode_ != Mode::client_rst && mode_ != Mode::proxy_rst) {
+                socket.shutdown(tcp::socket::shutdown_send, ec);
+            }
+            if (mode_ != Mode::proxy_eof && mode_ != Mode::proxy_rst) {
+                unsigned char ignored = 0;
+                auto [close_ec, close_size] = co_await socket.async_read_some(
+                    asio::buffer(&ignored, 1), asio::as_tuple(asio::use_awaitable));
+            }
+            if (mode_ == Mode::abrupt_close || mode_ == Mode::proxy_rst) {
+                socket.set_option(asio::socket_base::linger(true, 0), ec);
+            }
             socket.close(ec);
             co_return;
         }
@@ -300,6 +320,87 @@ void set_native_timeouts(SOCKET socket) {
                reinterpret_cast<const char*>(&timeout_ms), sizeof(timeout_ms));
     setsockopt(socket, SOL_SOCKET, SO_SNDTIMEO,
                reinterpret_cast<const char*>(&timeout_ms), sizeof(timeout_ms));
+}
+
+std::string_view mode_name(RelayFixture::Mode mode) {
+    switch (mode) {
+        case RelayFixture::Mode::client_eof: return "client_eof";
+        case RelayFixture::Mode::client_rst: return "client_rst";
+        case RelayFixture::Mode::proxy_eof: return "proxy_eof";
+        case RelayFixture::Mode::proxy_rst: return "proxy_rst";
+        case RelayFixture::Mode::handshake_eof: return "handshake_eof";
+        default: return "unknown";
+    }
+}
+
+void run_teardown_case(RelayFixture::Mode mode, size_t iterations, size_t worker_count) {
+    RelayFixture fixture(worker_count, mode);
+    FailureLog failures;
+    std::atomic<size_t> next{0};
+    std::atomic<size_t> completed{0};
+    const size_t concurrency = std::min<size_t>(16, iterations);
+    std::vector<std::thread> clients;
+    clients.reserve(concurrency);
+
+    for (size_t thread_index = 0; thread_index < concurrency; ++thread_index) {
+        clients.emplace_back([&] {
+            try {
+                while (!failures.failed.load(std::memory_order_acquire)) {
+                    const size_t index = next.fetch_add(1, std::memory_order_relaxed);
+                    if (index >= iterations) break;
+                    auto client = fixture.connect_client(static_cast<int64_t>(index + 1));
+                    set_native_timeouts(client.socket.native_handle());
+
+                    if (mode == RelayFixture::Mode::handshake_eof) {
+                        fixture.require_cleanup(client.port);
+                        fixture.close_client(client, false);
+                        completed.fetch_add(1, std::memory_order_release);
+                        continue;
+                    }
+
+                    fixture.exchange_byte(client);
+                    std::error_code ec;
+                    if (mode == RelayFixture::Mode::client_eof) {
+                        client.socket.shutdown(tcp::socket::shutdown_send, ec);
+                        throw_if(ec, "client shutdown");
+                    }
+                    if (mode == RelayFixture::Mode::client_eof ||
+                        mode == RelayFixture::Mode::proxy_eof ||
+                        mode == RelayFixture::Mode::proxy_rst) {
+                        if (mode != RelayFixture::Mode::client_eof) {
+                            const unsigned char ack = 0xa5;
+                            asio::write(client.socket, asio::buffer(&ack, 1), ec);
+                            throw_if(ec, "client ack");
+                        }
+                        unsigned char ignored = 0;
+                        client.socket.read_some(asio::buffer(&ignored, 1), ec);
+                        require(static_cast<bool>(ec), "teardown did not reach the client");
+                    }
+                    fixture.close_client(client, mode == RelayFixture::Mode::client_rst);
+                    fixture.require_cleanup(client.port);
+                    completed.fetch_add(1, std::memory_order_release);
+                }
+            } catch (const std::exception& e) {
+                failures.add(e.what());
+            }
+        });
+    }
+    for (auto& client : clients) client.join();
+    failures.check();
+    require(completed.load() == iterations, "not all directional teardown cases completed");
+    std::cout << std::unitbuf << "PASS directional_teardown: mode=" << mode_name(mode)
+              << " connections=" << iterations << '\n';
+}
+
+void run_teardown_matrix(size_t iterations, size_t worker_count) {
+    const RelayFixture::Mode modes[] = {
+        RelayFixture::Mode::client_eof,
+        RelayFixture::Mode::client_rst,
+        RelayFixture::Mode::proxy_eof,
+        RelayFixture::Mode::proxy_rst,
+        RelayFixture::Mode::handshake_eof,
+    };
+    for (const auto mode : modes) run_teardown_case(mode, iterations, worker_count);
 }
 
 void run_echo_transfer(ConnectedClient& client, size_t total_bytes,
@@ -408,6 +509,200 @@ std::pair<size_t, size_t> process_memory() {
     return {counters.WorkingSetSize, counters.PrivateUsage};
 }
 
+DWORD process_handle_count() {
+    DWORD count = 0;
+    require(GetProcessHandleCount(GetCurrentProcess(), &count),
+            "GetProcessHandleCount failed");
+    return count;
+}
+
+void run_mixed_soak(size_t seconds, size_t worker_count) {
+    const DWORD handles_before = process_handle_count();
+    double elapsed_result = 0;
+    double mib_result = 0;
+    uint64_t churn_result = 0;
+    {
+        RelayFixture fixture(worker_count, RelayFixture::Mode::echo);
+        FailureLog failures;
+        std::atomic<bool> stop{false};
+        std::atomic<size_t> ready{0};
+        std::atomic<size_t> next{0};
+        std::atomic<uint64_t> churn{0};
+        std::atomic<uint64_t> transferred{0};
+        constexpr size_t long_connections = 4;
+        constexpr size_t churn_threads = 16;
+        std::vector<std::thread> threads;
+
+        for (size_t index = 0; index < long_connections; ++index) {
+            threads.emplace_back([&, index] {
+                bool announced = false;
+                try {
+                    auto client =
+                        fixture.connect_client(static_cast<int64_t>(index + 1));
+                    const SOCKET native = client.socket.native_handle();
+                    set_native_timeouts(native);
+                    ready.fetch_add(1, std::memory_order_release);
+                    announced = true;
+                    std::vector<char> send_buffer(32 * 1024, 'x');
+                    std::atomic<bool> io_failed{false};
+                    std::thread reader([&] {
+                        std::vector<char> receive_buffer(32 * 1024);
+                        while (!stop.load(std::memory_order_acquire) &&
+                               !io_failed.load(std::memory_order_acquire)) {
+                            const int result = ::recv(
+                                native, receive_buffer.data(),
+                                static_cast<int>(receive_buffer.size()), 0);
+                            if (result <= 0) {
+                                if (!stop.load(std::memory_order_acquire)) {
+                                    failures.add("mixed soak reader stopped "
+                                                 "unexpectedly");
+                                    io_failed.store(true,
+                                                    std::memory_order_release);
+                                    ::shutdown(native, SD_BOTH);
+                                }
+                                break;
+                            }
+                            transferred.fetch_add(static_cast<size_t>(result),
+                                                  std::memory_order_relaxed);
+                        }
+                    });
+                    while (!stop.load(std::memory_order_acquire) &&
+                           !io_failed.load(std::memory_order_acquire)) {
+                        const int result =
+                            ::send(native, send_buffer.data(),
+                                   static_cast<int>(send_buffer.size()), 0);
+                        if (result <= 0) {
+                            if (!stop.load(std::memory_order_acquire)) {
+                                failures.add(
+                                    "mixed soak writer stopped unexpectedly");
+                                io_failed.store(true,
+                                                std::memory_order_release);
+                                ::shutdown(native, SD_BOTH);
+                            }
+                            break;
+                        }
+                        transferred.fetch_add(static_cast<size_t>(result),
+                                              std::memory_order_relaxed);
+                    }
+                    reader.join();
+                    fixture.close_client(client, false);
+                    fixture.require_cleanup(client.port);
+                } catch (const std::exception &e) {
+                    failures.add(e.what());
+                    if (!announced)
+                        ready.fetch_add(1, std::memory_order_release);
+                }
+            });
+        }
+
+        const auto ready_deadline = Clock::now() + 30s;
+        while (ready.load(std::memory_order_acquire) != long_connections) {
+            require(Clock::now() < ready_deadline,
+                    "mixed soak clients failed to connect");
+            std::this_thread::sleep_for(1ms);
+        }
+
+        // Exercise relay lifetime without turning the soak into a test of
+        // Windows loopback port reuse under unbounded short-connection churn.
+        const auto churn_started = Clock::now();
+        constexpr auto churn_interval = 10ms;
+        for (size_t index = 0; index < churn_threads; ++index) {
+            threads.emplace_back([&] {
+                try {
+                    while (!stop.load(std::memory_order_acquire) &&
+                           !failures.failed.load(std::memory_order_acquire)) {
+                        const size_t connection =
+                            next.fetch_add(1, std::memory_order_relaxed);
+                        std::this_thread::sleep_until(
+                            churn_started + connection * churn_interval);
+                        if (stop.load(std::memory_order_acquire) ||
+                            failures.failed.load(std::memory_order_acquire)) {
+                            break;
+                        }
+                        auto client = fixture.connect_client(
+                            static_cast<int64_t>(100 + connection));
+                        try {
+                            fixture.exchange_byte(client);
+                        } catch (const std::exception &e) {
+                            throw std::runtime_error(
+                                "mixed soak churn exchange failed for source port " +
+                                std::to_string(client.port) + ": " + e.what());
+                        }
+                        fixture.close_client(client, true);
+                        fixture.require_cleanup(client.port);
+                        churn.fetch_add(1, std::memory_order_relaxed);
+                    }
+                } catch (const std::exception &e) {
+                    failures.add(e.what());
+                }
+            });
+        }
+
+        const auto started = Clock::now();
+        while (Clock::now() - started < std::chrono::seconds(seconds) &&
+               !failures.failed.load(std::memory_order_acquire)) {
+            std::this_thread::sleep_for(50ms);
+        }
+        stop.store(true, std::memory_order_release);
+        for (auto &thread : threads)
+            thread.join();
+        threads.clear();
+        failures.check();
+        elapsed_result =
+            std::chrono::duration<double>(Clock::now() - started).count();
+        mib_result =
+            static_cast<double>(transferred.load()) / (1024.0 * 1024.0);
+        churn_result = churn.load();
+    }
+    const DWORD handles_after = process_handle_count();
+    std::this_thread::sleep_for(500ms);
+    const DWORD handles_settled = process_handle_count();
+
+    std::cout << std::unitbuf << std::fixed << std::setprecision(2)
+              << "MEASURE mixed_soak: seconds=" << elapsed_result
+              << " churn_connections=" << churn_result
+              << " transferred_mib=" << mib_result
+              << " aggregate_mib_per_second=" << (mib_result / elapsed_result)
+              << " handles_before=" << handles_before
+              << " handles_after=" << handles_after
+              << " handles_settled=" << handles_settled
+              << " sessions_alive=" << clew::g_relay_sessions_alive.load()
+              << '\n';
+    require(handles_settled <= handles_before + 4,
+            "handles did not return to baseline after mixed soak");
+    std::cout << "PASS mixed_soak: handles returned to baseline\n";
+}
+
+void run_active_shutdown(size_t connections, size_t worker_count) {
+    const DWORD handles_before = process_handle_count();
+    DWORD handles_active = handles_before;
+    {
+        RelayFixture fixture(worker_count, RelayFixture::Mode::echo);
+        std::vector<ConnectedClient> clients;
+        clients.reserve(connections);
+        for (size_t i = 0; i < connections; ++i) {
+            clients.push_back(fixture.connect_client(static_cast<int64_t>(i + 1)));
+        }
+        fixture.require_ready(connections, connections);
+        std::this_thread::sleep_for(200ms);
+        handles_active = process_handle_count();
+        require(handles_active >= handles_before + connections,
+                "active shutdown test did not create enough socket handles");
+
+        fixture.stop();
+        clients.clear();
+    }
+    const DWORD handles_after = process_handle_count();
+    std::cout << std::unitbuf << std::fixed << std::setprecision(2)
+              << "MEASURE active_shutdown: connections=" << connections
+              << " handles_before=" << handles_before
+              << " handles_active=" << handles_active
+              << " handles_after=" << handles_after << '\n';
+    require(handles_after <= handles_before + 16,
+            "socket handles leaked when active relay coroutines were destroyed");
+    std::cout << "PASS active_shutdown: handles returned to baseline\n";
+}
+
 void run_idle_memory(size_t connections, size_t worker_count) {
     RelayFixture fixture(worker_count, RelayFixture::Mode::echo);
 
@@ -447,11 +742,13 @@ void run_idle_memory(size_t connections, size_t worker_count) {
 
 struct Options {
     bool benchmark = false;
+    bool shutdown_only = false;
     size_t iterations = 2000;
     size_t concurrency = 32;
     size_t workers = 4;
     size_t idle_connections = 1000;
     size_t throughput_mib = 32;
+    size_t soak_seconds = 0;
 };
 
 size_t parse_size(const std::string& name, const std::string& value, size_t minimum) {
@@ -464,8 +761,9 @@ Options parse_options(int argc, char** argv) {
     Options options;
     for (int i = 1; i < argc; ++i) {
         const std::string argument = argv[i];
-        if (argument == "--benchmark") {
-            options.benchmark = true;
+        if (argument == "--benchmark" || argument == "--shutdown-only") {
+            if (argument == "--benchmark") options.benchmark = true;
+            else options.shutdown_only = true;
             continue;
         }
         require(i + 1 < argc, "missing value for " + argument);
@@ -475,6 +773,7 @@ Options parse_options(int argc, char** argv) {
         else if (argument == "--workers") options.workers = parse_size(argument, value, 2);
         else if (argument == "--idle") options.idle_connections = parse_size(argument, value, 1);
         else if (argument == "--throughput-mib") options.throughput_mib = parse_size(argument, value, 1);
+        else if (argument == "--soak-seconds") options.soak_seconds = parse_size(argument, value, 1);
         else throw std::runtime_error("unknown argument: " + argument);
     }
     require(options.concurrency <= options.iterations,
@@ -488,10 +787,17 @@ int main(int argc, char** argv) {
     quill::Backend::start();
     auto sink = quill::Frontend::create_or_get_sink<quill::ConsoleSink>("relay_test_console");
     clew::g_logger = quill::Frontend::create_or_get_logger("relay_test", std::move(sink));
-    clew::g_logger->set_log_level(quill::LogLevel::Warning);
+    clew::g_logger->set_log_level(quill::LogLevel::Error);
 
     try {
         const Options options = parse_options(argc, argv);
+        run_active_shutdown(64, options.workers);
+        if (options.shutdown_only) return 0;
+        if (options.soak_seconds > 0) {
+            run_mixed_soak(options.soak_seconds, options.workers);
+            return 0;
+        }
+        run_teardown_matrix(250, options.workers);
         if (options.benchmark) {
             const size_t bytes = options.throughput_mib * 1024 * 1024;
             run_throughput(1, bytes, options.workers);

@@ -1,25 +1,20 @@
 #pragma once
 
-// Bidirectional relay using C++20 coroutines.
-// Replaces thread-per-direction proxy_relay.hpp.
-// Uses awaitable_operators || for any-completes-cancels-other.
-//
-// 100 connections = 100 coroutines on io_context worker threads.
-// Previous: 100 connections = 200 threads.
+// Bidirectional relay without parallel_group. Either direction ending closes
+// the whole session, preserving the previous || business policy.
 
 #define ASIO_STANDALONE
 #include <asio.hpp>
-#include <asio/experimental/awaitable_operators.hpp>
 #include <asio/use_awaitable.hpp>
 
 #include <array>
+#include <atomic>
 #include <format>
 #include "core/log.hpp"
 
 #include "core/port_tracker.hpp"
 #include "proxy/socks5_async.hpp"
 
-// Format host-byte-order IPv4 as dotted string
 inline std::string ip_host_to_string(uint32_t ip) {
     return std::format("{}.{}.{}.{}",
                        (ip >> 24) & 0xFF, (ip >> 16) & 0xFF,
@@ -29,16 +24,13 @@ inline std::string ip_host_to_string(uint32_t ip) {
 namespace clew {
 
 using asio::ip::tcp;
-using asio::experimental::awaitable_operators::operator||;
 
-// ProxyGroupConfig for relay (matches v3 architecture groups_ map value)
 struct ProxyGroupConfig {
     std::string host;
     uint16_t    port{7890};
 };
 
-// Unidirectional pipe: read from `from`, write to `to`.
-// On EOF or error, shutdown the write side of `to` so the other pipe sees EOF.
+// Retained for the local echo peer in test_relay.cpp.
 inline asio::awaitable<void>
 pipe(tcp::socket& from, tcp::socket& to)
 {
@@ -51,71 +43,132 @@ pipe(tcp::socket& from, tcp::socket& to)
                 to, asio::buffer(buf, n), asio::use_awaitable);
         }
     } catch (...) {
-        // Any error (EOF, reset, timeout, bad_alloc) → shutdown the peer
-        // direction so the other pipe coroutine sees EOF and exits. The
-        // handling is identical for every exception type, so a catch-all
-        // is correct here by design (not defensive laziness).
         std::error_code ec;
         to.shutdown(tcp::socket::shutdown_send, ec);
     }
 }
 
-// Handle a single redirected connection.
-// Reads tracker entry, connects to SOCKS5 proxy, relays bidirectionally.
-//
-// Parameters:
-//   client_sock:    accepted socket from local listener (redirected app connection)
-//   tracker:        port tracker to lookup original destination
-//   strand:         strand protecting groups_ map
-//   groups:         proxy group config map (read on strand)
-//   port_cleaner:   callback to clear tracker entry on connection close
-inline asio::awaitable<void>
-handle_connection(tcp::socket client_sock,
-                  PortTracker& tracker,
-                  asio::strand<asio::io_context::executor_type>& strand,
-                  const std::unordered_map<uint32_t, ProxyGroupConfig>& groups)
-{
+inline std::atomic<int> g_relay_sessions_alive{0};
+struct RelaySessionAlive {
+    RelaySessionAlive() {
+        g_relay_sessions_alive.fetch_add(1, std::memory_order_relaxed);
+    }
+    ~RelaySessionAlive() {
+        g_relay_sessions_alive.fetch_sub(1, std::memory_order_relaxed);
+    }
+};
+
+struct RelaySession {
+    tcp::socket client_sock;
+    tcp::socket proxy_sock;
+    PortTracker *tracker;
+    asio::strand<asio::io_context::executor_type> *strand;
+    asio::io_context *ioc;
+    uint16_t src_port;
+    int64_t flow_ts;
+    std::string dest_ip_str;
+    uint16_t dest_port;
+    std::atomic<bool> closing{false};
+    std::atomic<int> remaining{2};
+    RelaySessionAlive alive;
+};
+
+inline void finish_relay_session(RelaySession *session) {
+    if (!session->closing.exchange(true, std::memory_order_acq_rel)) {
+        // The sockets stay alive until both direction coroutines finish.
+        // Native shutdown wakes their pending Winsock operations without
+        // racing a second close or destroying Asio's socket state early.
+        (void)::shutdown(session->client_sock.native_handle(), SD_BOTH);
+        (void)::shutdown(session->proxy_sock.native_handle(), SD_BOTH);
+    }
+
+    if (session->remaining.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+        if (!session->ioc->stopped()) {
+            auto *tracker = session->tracker;
+            auto *strand = session->strand;
+            const uint16_t src_port = session->src_port;
+            const int64_t flow_ts = session->flow_ts;
+            asio::post(*strand, [tracker, src_port, flow_ts] {
+                tracker->clear_if(src_port, flow_ts);
+            });
+            PC_LOG_DEBUG("[RELAY] Closed port={} ({}:{})", session->src_port,
+                         session->dest_ip_str, session->dest_port);
+        }
+        delete session;
+    }
+}
+
+struct RelayFinishGuard {
+    RelaySession *session;
+    ~RelayFinishGuard() { finish_relay_session(session); }
+};
+
+inline asio::awaitable<void> relay_direction(RelaySession *session,
+                                             bool client_to_proxy) {
+    RelayFinishGuard finish_guard{session};
+    auto &from = client_to_proxy ? session->client_sock : session->proxy_sock;
+    auto &to = client_to_proxy ? session->proxy_sock : session->client_sock;
+    std::array<char, 32 * 1024> buf{};
+
+    try {
+        for (;;) {
+            auto n = co_await from.async_read_some(asio::buffer(buf),
+                                                   asio::use_awaitable);
+            co_await asio::async_write(to, asio::buffer(buf, n),
+                                       asio::use_awaitable);
+        }
+    } catch (...) {
+        // EOF, reset, and other errors all terminate the whole session in
+        // this implementation. Error-fidelity propagation is deliberately
+        // out of scope.
+    }
+}
+
+inline asio::awaitable<void> handle_connection(
+    tcp::socket client_sock, PortTracker &tracker,
+    asio::strand<asio::io_context::executor_type> &strand,
+    const std::unordered_map<uint32_t, ProxyGroupConfig> &groups) {
     auto ex = co_await asio::this_coro::executor;
 
     std::error_code ep_ec;
     auto ep = client_sock.remote_endpoint(ep_ec);
-    if (ep_ec) co_return;  // socket already closed
+    if (ep_ec)
+        co_return;
     const uint16_t src_port = ep.port();
 
-    // Lookup tracker entry. The CONNECT timestamp identifies *this* flow: the
-    // app may close, reuse the port and get a fresh decision before we tear
-    // down, and the cleanup below must not wipe that newer flow's slot.
     auto taken = tracker.take(src_port);
     if (!taken) {
         PC_LOG_DEBUG("[RELAY] No tracker entry for port {}", src_port);
         co_return;
     }
-    const TrackerEntry* entry = &taken->entry;
+    const TrackerEntry *entry = &taken->entry;
     const int64_t flow_ts = taken->connect_ts;
 
-    // All tracker clears happen on the strand (single writer for state
-    // transitions out of a decided slot); the relay only asks for one.
     auto release_slot = [&tracker, &strand, src_port, flow_ts]() {
         asio::post(strand, [&tracker, src_port, flow_ts]() {
             tracker.clear_if(src_port, flow_ts);
         });
     };
 
-    // Query group config on strand (enter strand, read, exit immediately)
     struct GroupInfo {
         std::string host;
         uint16_t port;
     };
 
-    auto cfg_opt = co_await asio::co_spawn(strand,
-        [&groups, group_id = entry->group_id]() -> asio::awaitable<std::optional<GroupInfo>> {
+    auto cfg_opt = co_await asio::co_spawn(
+        strand,
+        [&groups, group_id = entry->group_id]()
+            -> asio::awaitable<std::optional<GroupInfo>> {
             auto it = groups.find(group_id);
-            if (it == groups.end()) co_return std::nullopt;
+            if (it == groups.end())
+                co_return std::nullopt;
             co_return GroupInfo{it->second.host, it->second.port};
-        }, asio::use_awaitable);
+        },
+        asio::use_awaitable);
 
     if (!cfg_opt) {
-        PC_LOG_WARN("[RELAY] Group {} not found for port {}", entry->group_id, src_port);
+        PC_LOG_WARN("[RELAY] Group {} not found for port {}", entry->group_id,
+                    src_port);
         release_slot();
         co_return;
     }
@@ -123,22 +176,20 @@ handle_connection(tcp::socket client_sock,
     auto dest_addr = entry->remote_addr[0];
     auto dest_port = entry->remote_port;
 
-    // DNS redirect: TCP:53 connections from proxied processes → use clean DNS server
-    // Prevents DNS pollution when Chromium's built-in resolver queries local DNS directly
     if (dest_port == 53) {
-        // 8.8.8.8 in host byte order = 0x08080808
         auto orig = dest_addr;
         dest_addr = 0x08080808;
         PC_LOG_DEBUG("[RELAY] DNS redirect port={} {}:53 -> 8.8.8.8:53",
-                      src_port, ip_host_to_string(orig));
+                     src_port, ip_host_to_string(orig));
     }
 
     auto dest_ip_str = ip_host_to_string(dest_addr);
+    RelaySession *session = nullptr;
+    bool handed_off = false;
 
     try {
         auto t0 = std::chrono::steady_clock::now();
 
-        // Connect to SOCKS5 proxy
         tcp::resolver resolver{ex};
         auto eps = co_await resolver.async_resolve(
             cfg_opt->host, std::to_string(cfg_opt->port), asio::use_awaitable);
@@ -147,30 +198,55 @@ handle_connection(tcp::socket client_sock,
         co_await asio::async_connect(proxy_sock, eps, asio::use_awaitable);
 
         auto t1 = std::chrono::steady_clock::now();
-
-        // SOCKS5 handshake — establish tunnel to original destination
         co_await socks5_handshake(proxy_sock, dest_addr, dest_port);
-
         auto t2 = std::chrono::steady_clock::now();
-        auto connect_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-        auto handshake_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count();
 
-        PC_LOG_INFO("[RELAY] OK port={} -> {}:{} (proxy connect={}ms, socks5={}ms)",
-                     src_port, dest_ip_str, dest_port, connect_ms, handshake_ms);
+        auto connect_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0)
+                .count();
+        auto handshake_ms =
+            std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1)
+                .count();
+        PC_LOG_INFO(
+            "[RELAY] OK port={} -> {}:{} (proxy connect={}ms, socks5={}ms)",
+            src_port, dest_ip_str, dest_port, connect_ms, handshake_ms);
 
-        // Bidirectional relay: || means any-completes-cancels-other
-        // (parens required — co_await has higher precedence than ||, without them
-        //  the expression parses as `(co_await pipe(a,b)) || pipe(b,a)`)
-        co_await (pipe(client_sock, proxy_sock) || pipe(proxy_sock, client_sock));
+        auto *ioc = static_cast<asio::io_context *>(
+            &client_sock.get_executor().context());
+        session = new RelaySession{std::move(client_sock),
+                                   std::move(proxy_sock),
+                                   &tracker,
+                                   &strand,
+                                   ioc,
+                                   src_port,
+                                   flow_ts,
+                                   dest_ip_str,
+                                   dest_port};
 
-    } catch (const std::exception& e) {
-        PC_LOG_WARN("[RELAY] FAIL port={} -> {}:{} error: {}",
-                     src_port, dest_ip_str, dest_port, e.what());
+        auto forward = relay_direction(session, true);
+        auto reverse = relay_direction(session, false);
+        asio::co_spawn(ex, std::move(forward), asio::detached);
+        handed_off = true;
+        asio::co_spawn(ex, std::move(reverse), asio::detached);
+        co_return;
+    } catch (const std::exception &e) {
+        PC_LOG_WARN("[RELAY] FAIL port={} -> {}:{} error: {}", src_port,
+                    dest_ip_str, dest_port, e.what());
+        if (session) {
+            if (handed_off) {
+                // The second direction did not start; account for its slot.
+                finish_relay_session(session);
+            } else {
+                delete session;
+            }
+        }
     }
 
-    // Cleanup tracker entry (on the strand, guarded by this flow's timestamp)
-    release_slot();
-    PC_LOG_DEBUG("[RELAY] Closed port={} ({}:{})", src_port, dest_ip_str, dest_port);
+    if (!handed_off) {
+        release_slot();
+        PC_LOG_DEBUG("[RELAY] Closed port={} ({}:{})", src_port, dest_ip_str,
+                     dest_port);
+    }
 }
 
 } // namespace clew

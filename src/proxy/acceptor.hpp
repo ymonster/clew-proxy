@@ -85,9 +85,8 @@ private:
 
             accepted_count_.fetch_add(1);
 
-            // Serialise this connection's completion and cancellation handlers
-            // without serialising unrelated connections on the shared strand.
-            asio::co_spawn(asio::make_strand(ioc_),
+            // Independent relay directions coordinate their own teardown.
+            asio::co_spawn(ioc_,
                 handle_connection(std::move(sock), tracker_, strand_, groups_),
                 asio::detached);
         }

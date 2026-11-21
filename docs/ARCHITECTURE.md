@@ -318,9 +318,9 @@ Counters (`GET /api/stats` → `tcp_syn_parking`, and a `[SYN-PARK]` INFO line e
 
 ### C++20 coroutine relay
 
-- `acceptor.hpp`: Asio TCP acceptor spawns `handle_connection` on a separate strand for each accepted connection
-- `relay.hpp`: bidirectional async pipe using `async_read_some` / `async_write`; `||` means any-completes-cancels-other
-- The per-connection strand serialises completion and cancellation handlers for that connection's two pipes. Network I/O remains overlapped, and unrelated connections still run concurrently across the worker pool. The shared application strand is used only for brief tracker/config operations, not relay traffic.
+- `acceptor.hpp`: Asio TCP acceptor spawns `handle_connection` on the shared multi-worker `io_context`; there is no per-connection strand.
+- `relay.hpp`: two independent direction coroutines use `async_read_some` / `async_write`. Either direction ending still closes the whole session, preserving the previous `||` business policy without sharing a `parallel_group` cancellation handler.
+- `RelaySession` owns both sockets. An atomic `closing` flag allows only one native `shutdown(SD_BOTH)` to wake both directions, and `remaining = 2` lets only the last direction destroy the session. Each direction has an RAII finish guard so forced coroutine destruction also releases its slot. Tracker cleanup is posted to the shared application strand only while the `io_context` is still running.
 - `socks5_async.hpp`: SOCKS5 handshake as a coroutine (no blocking threads)
 
 ### Rule priority
@@ -534,10 +534,12 @@ competes with V8 main-thread push processing under load):
   metrics — useful for verifying the visibility gate.
 - `tests/test_relay.cpp` — real `async_acceptor` / `handle_connection` against
   a local SOCKS5 peer, with no admin, WinDivert, or external network. The
-  default run stresses simultaneous two-direction teardown on multiple
-  workers. `--benchmark` adds single-/8-connection throughput, idle-connection
-  memory, and short-connection churn. Build and option details are in the
-  file header; `--iterations`, `--concurrency`, `--workers`, `--idle`, and
+  default run covers active shutdown, directional EOF/RST, handshake EOF,
+  and simultaneous two-direction teardown on multiple workers. `--benchmark`
+  adds single-/8-connection throughput and idle-connection memory;
+  `--soak-seconds N` mixes sustained full-duplex traffic with connection churn
+  and checks handles after teardown. Build and option details are in the file
+  header; `--iterations`, `--concurrency`, `--workers`, `--idle`, and
   `--throughput-mib` control the load.
 
 These harnesses are not part of `verify.sh`; run `test_relay.cpp` explicitly
