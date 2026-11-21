@@ -23,7 +23,7 @@ from PIL import Image, ImageDraw
 HERE = Path(__file__).parent
 ICO = HERE / "clew.ico"
 PNG_PREVIEW = HERE / "clew.png"
-SIZES = (16, 32, 48, 64, 128, 256)
+SIZES = (16, 20, 24, 30, 32, 36, 40, 48, 60, 64, 72, 80, 96, 128, 256)
 
 BG = (244, 236, 221, 255)      # cream
 FG = (26, 26, 26, 255)         # dark gray
@@ -36,8 +36,9 @@ def render(size: int) -> Image.Image:
     img = Image.new("RGBA", (w, h), BG)
     draw = ImageDraw.Draw(img)
 
-    # Stroke width ~6.5% of canvas, scaled up.
-    sw = max(int(round(w * 0.065)), 2)
+    # Keep the main outline legible at tray sizes without thickening the details.
+    detail_width = round(w * 0.065)
+    sw = max(detail_width, round(1.5 * scale))
 
     cx, cy = w * 0.47, h * 0.51
     radius = w * 0.27
@@ -59,14 +60,14 @@ def render(size: int) -> Image.Image:
     draw.line([(x0, y0), (nx, ny)], fill=FG, width=sw)
 
     # --- Needle head (filled dot). ---
-    dot_r = sw * 1.35
+    dot_r = detail_width * 1.35
     draw.ellipse([nx - dot_r, ny - dot_r, nx + dot_r, ny + dot_r], fill=FG)
 
     # --- Decorative inner curl: small comma inside the C's right opening. ---
     cux, cuy = cx + radius * 0.35, cy + radius * 0.15
     curl_r = radius * 0.22
     cbbox = (cux - curl_r, cuy - curl_r, cux + curl_r, cuy + curl_r)
-    draw.arc(cbbox, start=200, end=30, fill=FG, width=sw)
+    draw.arc(cbbox, start=200, end=30, fill=FG, width=detail_width)
 
     # Downsample with high-quality filter.
     return img.resize((size, size), Image.LANCZOS)
@@ -74,11 +75,12 @@ def render(size: int) -> Image.Image:
 
 def main() -> None:
     images = [render(s) for s in SIZES]
-    images[0].save(
+    # Pillow skips sizes larger than the base image, even with append_images.
+    images[-1].save(
         ICO,
         format="ICO",
         sizes=[(s, s) for s in SIZES],
-        append_images=images[1:],
+        append_images=images[:-1],
     )
     images[-1].save(PNG_PREVIEW)
     print(f"Wrote {ICO}")

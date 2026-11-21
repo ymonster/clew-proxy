@@ -327,11 +327,18 @@ private:
         nid_.uID = 1;
         nid_.uFlags = NIF_ICON | NIF_TIP | NIF_MESSAGE;
         nid_.uCallbackMessage = WM_TRAYICON;
-        // Load the embedded Clew icon (resource ID 1 from assets/clew.rc).
-        // Fall back to system default if, for some reason, resource load fails.
+        // Match the notification area on the primary taskbar, which can have
+        // a different DPI from the Clew window.
+        HWND taskbar = FindWindowW(L"Shell_TrayWnd", nullptr);
+        UINT dpi = taskbar ? GetDpiForWindow(taskbar) : 0;
+        if (!dpi) dpi = GetDpiForSystem();
+        int width = GetSystemMetricsForDpi(SM_CXSMICON, dpi);
+        int height = GetSystemMetricsForDpi(SM_CYSMICON, dpi);
         HINSTANCE hinst = GetModuleHandleW(nullptr);
-        HICON app_icon = LoadIconW(hinst, MAKEINTRESOURCEW(1));
-        nid_.hIcon = app_icon ? app_icon : LoadIcon(nullptr, IDI_APPLICATION);
+        HICON app_icon = static_cast<HICON>(LoadImageW(
+            hinst, MAKEINTRESOURCEW(1), IMAGE_ICON, width, height, 0));
+        nid_.hIcon = app_icon ? app_icon : static_cast<HICON>(LoadImage(
+            nullptr, IDI_APPLICATION, IMAGE_ICON, width, height, LR_SHARED));
         wcscpy_s(nid_.szTip, L"Clew");
 
         // NIM_ADD is the normal path. NIM_MODIFY catches the Win10 1903 case
@@ -339,6 +346,8 @@ private:
         // registration being cleared (see wxWidgets#18588).
         BOOL ok = Shell_NotifyIconW(NIM_ADD, &nid_);
         if (!ok) ok = Shell_NotifyIconW(NIM_MODIFY, &nid_);
+        if (app_icon) DestroyIcon(app_icon);
+        nid_.hIcon = nullptr;
 
         if (!ok) {
             // Common at autostart: shell isn't ready to accept registrations
