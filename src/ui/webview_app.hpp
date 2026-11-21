@@ -13,6 +13,7 @@
 #include <WebView2.h>
 #include <WebView2EnvironmentOptions.h>
 #endif
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <functional>
@@ -48,9 +49,10 @@ private:
     int height_ = 800;
     int init_x_ = -1;  // -1 = center
     int init_y_ = -1;
+    int init_dpi_ = 0;
     std::wstring title_ = L"Clew";
     std::function<void()> on_close_;
-    std::function<void(int, int, int, int)> on_move_resize_;
+    std::function<void(int, int, int, int, int)> on_move_resize_;
     bool initialized_ = false;
     // Controller lifecycle, distinct from `initialized_` (= "navigated"). Drives
     // ensure_webview_initialized()'s idempotent (re)try. UI-thread only: every
@@ -500,18 +502,46 @@ private:
         return 0;
     }
 
-    static LRESULT on_getminmaxinfo(LPARAM lparam) {
+    static bool get_work_area(HWND hwnd, RECT& work_area) {
+        MONITORINFO monitor_info = {sizeof(monitor_info)};
+        const HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        if (!GetMonitorInfoW(monitor, &monitor_info)) return false;
+        work_area = monitor_info.rcWork;
+        return true;
+    }
+
+    static LRESULT on_getminmaxinfo(HWND hwnd, LPARAM lparam) {
         MINMAXINFO* mmi = reinterpret_cast<MINMAXINFO*>(lparam);
-        mmi->ptMinTrackSize.x = 900;
-        mmi->ptMinTrackSize.y = 600;
+        const UINT dpi = GetDpiForWindow(hwnd);
+        mmi->ptMinTrackSize.x = MulDiv(900, dpi, USER_DEFAULT_SCREEN_DPI);
+        mmi->ptMinTrackSize.y = MulDiv(600, dpi, USER_DEFAULT_SCREEN_DPI);
+
+        RECT work_area;
+        if (get_work_area(hwnd, work_area)) {
+            mmi->ptMinTrackSize.x = std::min(mmi->ptMinTrackSize.x, work_area.right - work_area.left);
+            mmi->ptMinTrackSize.y = std::min(mmi->ptMinTrackSize.y, work_area.bottom - work_area.top);
+        }
+        return 0;
+    }
+
+    static LRESULT on_dpi_changed(HWND hwnd, LPARAM lparam) {
+        const auto& rect = *reinterpret_cast<const RECT*>(lparam);
+        SetWindowPos(hwnd, nullptr, rect.left, rect.top,
+                     rect.right - rect.left, rect.bottom - rect.top,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
         return 0;
     }
 
     LRESULT on_exitsizemove(HWND hwnd) {
         if (on_move_resize_) {
             RECT r;
-            GetWindowRect(hwnd, &r);
-            on_move_resize_(r.left, r.top, r.right - r.left, r.bottom - r.top);
+            if (!GetWindowRect(hwnd, &r)) return 0;
+            const int dpi = static_cast<int>(GetDpiForWindow(hwnd));
+            if (dpi == 0) return 0;
+            on_move_resize_(r.left, r.top,
+                            MulDiv(r.right - r.left, USER_DEFAULT_SCREEN_DPI, dpi),
+                            MulDiv(r.bottom - r.top, USER_DEFAULT_SCREEN_DPI, dpi),
+                            dpi);
         }
         return 0;
     }
@@ -614,9 +644,10 @@ private:
                 break;
             }
             case WM_SIZE:               return app->on_size(wparam);
+            case WM_DPICHANGED:         return on_dpi_changed(hwnd, lparam);
             case WM_CLOSE:              return app->on_close(hwnd);
             case WM_DESTROY:            return app->on_destroy();
-            case WM_GETMINMAXINFO:      return on_getminmaxinfo(lparam);
+            case WM_GETMINMAXINFO:      return on_getminmaxinfo(hwnd, lparam);
             case WM_EXITSIZEMOVE:       return app->on_exitsizemove(hwnd);
             case WM_TRAYICON:           return app->on_trayicon(lparam);
             case WM_COMMAND:            return app->on_command(hwnd, wparam);
@@ -655,8 +686,14 @@ public:
 
     void set_title(std::wstring_view title) { title_ = title; }
     void set_on_close(std::function<void()> callback) { on_close_ = std::move(callback); }
-    void set_on_move_resize(std::function<void(int, int, int, int)> callback) { on_move_resize_ = std::move(callback); }
-    void set_initial_rect(int x, int y, int w, int h) { init_x_ = x; init_y_ = y; width_ = w; height_ = h; }
+    void set_on_move_resize(std::function<void(int, int, int, int, int)> callback) { on_move_resize_ = std::move(callback); }
+    void set_initial_rect(int x, int y, int w, int h, int dpi) {
+        init_x_ = x;
+        init_y_ = y;
+        width_ = w;
+        height_ = h;
+        init_dpi_ = dpi;
+    }
     void set_close_to_tray(bool v) { close_to_tray_ = v; }
     void set_devtools_enabled(bool v) { devtools_enabled_ = v; }
     // Skip the initial SW_SHOW and start hidden (tray-only). Used by the
@@ -719,7 +756,8 @@ public:
 
         int x;
         int y;
-        if (init_x_ >= 0 && init_y_ >= 0) {
+        const bool has_saved_position = init_x_ >= 0 && init_y_ >= 0;
+        if (has_saved_position) {
             x = init_x_;
             y = init_y_;
         } else {
@@ -729,10 +767,13 @@ public:
             y = (screen_height - height_) / 2;
         }
 
+        // Select the initial monitor using the saved window's physical size.
+        const int saved_dpi = has_saved_position && init_dpi_ > 0 ? init_dpi_ : USER_DEFAULT_SCREEN_DPI;
         hwnd_ = CreateWindowExW(
             0, L"ClewWebViewClass", title_.c_str(),
             WS_OVERLAPPEDWINDOW,
-            x, y, width_, height_,
+            x, y, MulDiv(width_, saved_dpi, USER_DEFAULT_SCREEN_DPI),
+            MulDiv(height_, saved_dpi, USER_DEFAULT_SCREEN_DPI),
             nullptr, nullptr, hinstance, this
         );
 
@@ -741,9 +782,26 @@ public:
             return false;
         }
 
-        // Trigger WM_NCCALCSIZE to apply our frameless layout
-        SetWindowPos(hwnd_, nullptr, 0, 0, 0, 0,
-            SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        // Use the window's monitor DPI before showing the frameless window.
+        const UINT dpi = GetDpiForWindow(hwnd_);
+        LONG window_width = MulDiv(width_, dpi, USER_DEFAULT_SCREEN_DPI);
+        LONG window_height = MulDiv(height_, dpi, USER_DEFAULT_SCREEN_DPI);
+        RECT work_area;
+        if (get_work_area(hwnd_, work_area)) {
+            const LONG work_width = work_area.right - work_area.left;
+            const LONG work_height = work_area.bottom - work_area.top;
+            window_width = std::min(window_width, work_width);
+            window_height = std::min(window_height, work_height);
+            if (has_saved_position) {
+                x = std::clamp<LONG>(x, work_area.left, work_area.right - window_width);
+                y = std::clamp<LONG>(y, work_area.top, work_area.bottom - window_height);
+            } else {
+                x = work_area.left + (work_width - window_width) / 2;
+                y = work_area.top + (work_height - window_height) / 2;
+            }
+        }
+        SetWindowPos(hwnd_, nullptr, x, y, window_width, window_height,
+                     SWP_FRAMECHANGED | SWP_NOZORDER | SWP_NOACTIVATE);
 
         // DWM: extend frame into client area for window shadow
         MARGINS margins = {1, 1, 1, 1};
